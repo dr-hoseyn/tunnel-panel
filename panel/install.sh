@@ -108,6 +108,15 @@ fi
 
 if [[ -d "${INSTALL_DIR}/.git" ]]; then
 echo "Existing install found, updating..."
+# This clone is fully owned by this installer -- nothing in it is meant to
+# be hand-edited. `npm install` below can leave package-lock.json locally
+# modified (platform-specific optional dependency entries resolving
+# differently than what's committed), which would otherwise block a plain
+# `git pull --ff-only` on every subsequent run with "local changes would be
+# overwritten". Discarding tracked-file changes here is safe specifically
+# because of that ownership -- it never touches .env/dev.db/node_modules
+# (untracked, gitignored).
+git -C "$INSTALL_DIR" checkout -- .
 git -C "$INSTALL_DIR" pull --ff-only
 else
 echo "Cloning ${REPO_URL}..."

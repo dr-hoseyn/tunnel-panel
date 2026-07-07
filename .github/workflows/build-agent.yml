@@ -1,5 +1,8 @@
 name: Build agent
 
+permissions:
+  contents: write # required for the "Attach to release" step's `gh release upload`
+
 on:
   push:
     branches: [main]
@@ -23,6 +26,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+          cache: false # no go.sum -- the agent has zero external dependencies
       - run: go vet ./...
       - run: gofmt -l . | (! grep .)
       - run: go test ./... -v
@@ -41,6 +45,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+          cache: false # no go.sum -- the agent has zero external dependencies
       - name: Build
         env:
           GOOS: linux
@@ -55,4 +60,4 @@ jobs:
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.event.release.tag_name }}" "tunnel-agent-linux-${{ matrix.goarch }}"
+        run: gh release upload "${{ github.event.release.tag_name }}" "tunnel-agent-linux-${{ matrix.goarch }}" --clobber

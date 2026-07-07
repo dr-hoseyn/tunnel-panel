@@ -58,12 +58,18 @@ cp "${tmp_dir}/tunnel-agent" "$tmp_bin"
 chmod +x "$tmp_bin"
 mv -f "$tmp_bin" "$BIN_PATH"
 
+GENERATED_TOKEN=""
 if [[ ! -f "${DATA_DIR}/token.hash" ]]; then
 echo ""
-"$BIN_PATH" -init -data-dir "$DATA_DIR"
+INIT_OUTPUT=$("$BIN_PATH" -init -data-dir "$DATA_DIR")
+echo "$INIT_OUTPUT"
 echo ""
 echo "^ Copy that token now -- it will not be shown again. It's what you'll"
 echo "  enter in the panel when registering this server."
+# -init's output is "<label line>\n<token>\n\n<instructions>" -- line 2 is
+# the raw token. Captured here (not just printed) so the JSON summary line
+# at the end can carry it too, for automated callers.
+GENERATED_TOKEN=$(sed -n '2p' <<< "$INIT_OUTPUT")
 else
 echo "Existing token found at ${DATA_DIR}/token.hash -- leaving it as is."
 fi
@@ -105,3 +111,11 @@ echo ""
 echo "tunnel-agent ${tag} installed and running on port 8443."
 echo "Fingerprint for verifying this server when you register it in the panel:"
 echo "$FINGERPRINT"
+
+# Machine-readable summary for automated callers (e.g. the panel's SSH-based
+# provisioning flow) to grep out of the full human-readable output above --
+# a single sentinel-prefixed line rather than a --json mode, so this stays
+# purely additive and every existing line above is untouched. token is only
+# non-empty on a fresh install (see the GENERATED_TOKEN comment above); a
+# caller provisioning a brand-new server should always see it populated.
+echo "TUNNEL_AGENT_INSTALL_RESULT: {\"tag\":\"${tag}\",\"fingerprint\":\"${FINGERPRINT}\",\"token\":\"${GENERATED_TOKEN}\"}"

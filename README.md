@@ -25,6 +25,22 @@ The Agent does not reimplement tunnel logic. It's a thin, authenticated HTTPS wr
 
 **Phase 1 (in progress):** one Agent, one registered server, login + live dashboard. No multi-server, no RBAC, no remote command execution yet — see `agent/README.md` and `panel/README.md` for what's actually implemented today versus the long-term plan.
 
+## Quick install
+
+On each VPS you want managed (needs [tunnel-manager](https://github.com/dr-hoseyn/tunnel-manager) already installed there):
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/dr-hoseyn/tunnel-panel/main/agent/install.sh)
+```
+
+On whichever server hosts the dashboard itself:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/dr-hoseyn/tunnel-panel/main/panel/install.sh)
+```
+
+Both print what you need for the next step (the agent prints a token + TLS fingerprint to paste into the panel; the panel prints its login and, by default, an SSH tunnel command since it binds to localhost only). See `agent/README.md` and `panel/README.md` for details and flags.
+
 ## Layout
 
 - `agent/` — Go agent that runs on each VPS.

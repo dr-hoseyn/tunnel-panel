@@ -16,7 +16,19 @@ Multi-server bulk actions, RBAC/multiple users, WebSocket live updates (currentl
 
 **Known gap:** the agent bearer token is stored in cleartext in the SQLite DB (`Server.agentToken`) — acceptable for phase 1's single-admin scope, but needs encryption-at-rest before this handles multiple untrusted operators sharing one panel instance.
 
-## Setup
+## Install on a server (production)
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/dr-hoseyn/tunnel-panel/main/panel/install.sh)
+```
+
+Installs Node.js if missing, clones this repo to `/opt/tunnel-panel`, builds, generates an admin account (random password, printed once — same pattern as the agent's bearer token), and runs it as `tunnel-panel.service`.
+
+**Binds to `127.0.0.1:3000` by default, not the public interface.** The panel has no TLS of its own and holds every registered server's bearer token, so the safe default is reaching it over an SSH tunnel (the install script prints the exact command). Pass `--public` to bind `0.0.0.0` instead, only if you're putting a real reverse proxy with TLS in front of it yourself.
+
+Re-running the script later pulls and rebuilds in place; it won't overwrite an existing admin account or generate a new password.
+
+## Manual / local development setup
 
 ```bash
 npm install

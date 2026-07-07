@@ -12,6 +12,13 @@ export const authConfig: NextAuthConfig = {
   pages: { signIn: "/login" },
   session: { strategy: "jwt" },
   providers: [],
+  // Required any time this sits behind a reverse proxy (Caddy, nginx, ...)
+  // instead of being hit directly: NextAuth otherwise rejects the request
+  // with a generic "problem with the server configuration" error because it
+  // doesn't recognize the proxied Host header as trusted by default. Safe
+  // here specifically because Caddy (or whatever proxy is in front) is the
+  // only thing that can reach this app -- it always binds to 127.0.0.1.
+  trustHost: true,
   callbacks: {
     authorized({ auth }) {
       return !!auth?.user;

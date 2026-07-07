@@ -58,6 +58,23 @@ exit 1
 fi
 fi
 
+# better-sqlite3 (Prisma's SQLite driver adapter) is a native module -- if
+# no prebuilt binary matches this exact node/glibc/arch combination, npm
+# falls back to compiling it from source, which needs a C++ toolchain.
+# Installed unconditionally rather than probed for, since detecting "is a
+# prebuilt binary available for this exact target" in advance isn't
+# practical here and installing build-essential when it's not needed is
+# harmless.
+if ! command -v make &> /dev/null || ! command -v g++ &> /dev/null; then
+echo "Installing build tools (needed to compile better-sqlite3 if no prebuilt binary matches this server)..."
+if command -v apt-get &> /dev/null; then
+apt-get update -qq && apt-get install -y build-essential python3
+else
+echo "build-essential (make/g++) is required but couldn't be installed automatically -- install it yourself and re-run." >&2
+exit 1
+fi
+fi
+
 if [[ -d "${INSTALL_DIR}/.git" ]]; then
 echo "Existing install found, updating..."
 git -C "$INSTALL_DIR" pull --ff-only

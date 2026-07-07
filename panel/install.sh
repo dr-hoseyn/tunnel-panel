@@ -111,6 +111,9 @@ fi
 echo "Applying database migrations..."
 npx prisma migrate deploy
 
+echo "Generating Prisma Client..."
+npx prisma generate
+
 ADMIN_PASSWORD=""
 EXISTING_ADMIN_COUNT=$(node -e "
 const Database = require('better-sqlite3');

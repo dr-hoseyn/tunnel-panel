@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
-import { agentFetchFingerprint, agentGet, AgentError } from "@/lib/agent-client";
+import { registerServer, RegisterServerError } from "@/lib/register-server";
 
 export async function GET() {
   const session = await auth();
@@ -36,48 +36,13 @@ export async function POST(request: Request) {
     );
   }
 
-  // Trust-on-first-use: fetch the cert the agent is actually presenting
-  // right now, and require it to match what the operator copied from the
-  // agent's own install output. This is the one point where we trust an
-  // unpinned connection -- every request after registration is pinned.
-  let liveFingerprint: string;
   try {
-    liveFingerprint = await agentFetchFingerprint(host, agentPort);
+    const server = await registerServer({ name, host, agentPort, token, expectedFingerprint });
+    return NextResponse.json({ server }, { status: 201 });
   } catch (err) {
-    const message = err instanceof AgentError ? err.message : "could not reach the agent";
-    return NextResponse.json({ error: `Could not connect to the agent: ${message}` }, { status: 502 });
+    if (err instanceof RegisterServerError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
   }
-
-  if (liveFingerprint !== expectedFingerprint) {
-    return NextResponse.json(
-      {
-        error:
-          "The certificate the agent is presenting does not match the fingerprint you entered. " +
-          "Re-check it against the agent's install output before registering this server.",
-      },
-      { status: 409 },
-    );
-  }
-
-  // Confirm the token actually works against the now-pinned connection
-  // before persisting anything.
-  try {
-    await agentGet(
-      { host, port: agentPort, token, tlsFingerprint: liveFingerprint },
-      "/api/v1/metrics",
-    );
-  } catch (err) {
-    const message = err instanceof AgentError ? err.message : "token check failed";
-    return NextResponse.json(
-      { error: `Certificate verified, but the token was rejected: ${message}` },
-      { status: 401 },
-    );
-  }
-
-  const server = await prisma.server.create({
-    data: { name, host, agentPort, agentToken: token, tlsFingerprint: liveFingerprint },
-    select: { id: true, name: true, host: true, agentPort: true, createdAt: true },
-  });
-
-  return NextResponse.json({ server }, { status: 201 });
 }

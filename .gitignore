@@ -1,0 +1,28 @@
+# Go
+agent/tunnel-agent
+agent/tunnel-agent.exe
+agent/*.exe
+agent/dist/
+
+# Node / Next.js
+panel/node_modules/
+panel/.next/
+panel/out/
+panel/build/
+panel/.env
+panel/.env.local
+panel/.env*.local
+
+# Prisma / SQLite
+panel/prisma/*.db
+panel/prisma/*.db-journal
+
+# Agent runtime state (cert, token) — never commit secrets
+agent/data/
+*.pem
+*.key
+agent_token.txt
+
+# OS
+.DS_Store
+Thumbs.db

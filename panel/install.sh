@@ -8,11 +8,21 @@
 # Binds to 127.0.0.1:3000 by default -- deliberately not exposed on the
 # public interface. The panel has no TLS of its own and holds every
 # registered server's bearer token, so the safe default is: reach it over an
-# SSH tunnel (printed at the end), or put a reverse proxy with real TLS
-# (nginx + certbot, Caddy, etc.) in front of it yourself if you want it
-# reachable directly. Pass --public to bind 0.0.0.0 instead, if you already
-# have TLS termination sorted out in front of this or you understand the
-# risk of a plaintext-HTTP login page on the open internet.
+# SSH tunnel (printed at the end).
+#
+# --domain <domain>  Installs Caddy as a reverse proxy in front of the panel
+#                     and points it at that domain -- Caddy obtains and
+#                     auto-renews a real Let's Encrypt certificate with zero
+#                     further config. The panel itself stays bound to
+#                     127.0.0.1 either way; only Caddy is public. Requires
+#                     the domain's DNS to already point at this server (Let's
+#                     Encrypt cannot issue a certificate for a bare IP).
+#
+# --public            Binds the panel directly to 0.0.0.0 instead (plaintext
+#                      HTTP, no TLS). Only for when you're fronting this with
+#                      your own separately-managed reverse proxy/TLS. Ignored
+#                      if --domain is given, since Caddy is the public
+#                      interface in that case.
 set -euo pipefail
 
 # Runs headless (bash <(curl ...), no TTY) -- apt must never stop to ask
@@ -31,12 +41,23 @@ SERVICE_FILE="/etc/systemd/system/tunnel-panel.service"
 BIND_HOST="127.0.0.1"
 ADMIN_EMAIL="admin@tunnel-panel.local"
 NODE_MIN_MAJOR=20
+DOMAIN=""
 
-for arg in "$@"; do
-case "$arg" in
---public) BIND_HOST="0.0.0.0" ;;
+while [[ $# -gt 0 ]]; do
+case "$1" in
+--public) BIND_HOST="0.0.0.0"; shift ;;
+--domain)
+DOMAIN="${2:-}"
+[[ -z "$DOMAIN" ]] && { echo "--domain needs a value, e.g. --domain panel.example.com" >&2; exit 1; }
+shift 2
+;;
+*) shift ;;
 esac
 done
+
+# Caddy is the public interface when a domain is given -- the panel itself
+# always stays internal-only in that mode, regardless of --public.
+[[ -n "$DOMAIN" ]] && BIND_HOST="127.0.0.1"
 
 if [[ $EUID -ne 0 ]]; then
 echo "This script must be run as root" >&2
@@ -153,17 +174,61 @@ EOF
 systemctl daemon-reload
 systemctl enable --now tunnel-panel.service
 
+if [[ -n "$DOMAIN" ]]; then
+if ! command -v caddy &> /dev/null; then
+echo "Installing Caddy..."
+if command -v apt-get &> /dev/null; then
+apt-get update -qq
+apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list > /dev/null
+chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+chmod o+r /etc/apt/sources.list.d/caddy-stable.list
+apt-get update -qq
+apt-get install -y caddy
+else
+echo "Unsupported distro for automatic Caddy install -- install it yourself and re-run with --domain." >&2
+exit 1
+fi
+fi
+
+mkdir -p /etc/caddy/conf.d
+# Composable rather than overwriting the main Caddyfile outright, in case
+# this Caddy instance ends up fronting anything else on this server later.
+touch /etc/caddy/Caddyfile
+grep -qxF "import /etc/caddy/conf.d/*.caddy" /etc/caddy/Caddyfile || echo "import /etc/caddy/conf.d/*.caddy" >> /etc/caddy/Caddyfile
+cat > /etc/caddy/conf.d/tunnel-panel.caddy <<EOF
+${DOMAIN} {
+	reverse_proxy 127.0.0.1:3000
+}
+EOF
+
+if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
+ufw allow 80/tcp > /dev/null 2>&1
+ufw allow 443/tcp > /dev/null 2>&1
+fi
+
+systemctl daemon-reload
+systemctl enable --now caddy
+systemctl reload caddy 2>/dev/null || systemctl restart caddy
+fi
+
 echo ""
 echo "tunnel-panel installed and running."
 echo ""
-if [[ "$BIND_HOST" == "127.0.0.1" ]]; then
-echo "Bound to localhost only (no public exposure, no TLS of its own -- see the"
-echo "note at the top of this script). Reach it via an SSH tunnel:"
+if [[ -n "$DOMAIN" ]]; then
+echo "Reachable at https://${DOMAIN} -- Caddy obtains and auto-renews a real"
+echo "Let's Encrypt certificate for it automatically. This only works if"
+echo "${DOMAIN}'s DNS already points at this server's IP; if it doesn't yet,"
+echo "fix the DNS record and run: systemctl restart caddy"
+elif [[ "$BIND_HOST" == "127.0.0.1" ]]; then
+echo "Bound to localhost only (no public exposure, no TLS of its own). Reach"
+echo "it via an SSH tunnel:"
 echo "  ssh -L 3000:localhost:3000 root@$(hostname -I | awk '{print $1}')"
 echo "then open http://localhost:3000 on your own machine."
 echo ""
-echo "To expose it directly instead (only if you're putting real TLS in front"
-echo "of it yourself), re-run with --public."
+echo "For direct access with a real certificate instead, re-run with"
+echo "--domain <your-domain> (needs DNS already pointed at this server)."
 else
 echo "Bound to 0.0.0.0:3000 -- reachable at http://$(hostname -I | awk '{print $1}'):3000"
 echo "This is plaintext HTTP. Put a reverse proxy with real TLS in front of it"

@@ -24,7 +24,17 @@ bash <(curl -fsSL https://raw.githubusercontent.com/dr-hoseyn/tunnel-panel/main/
 
 Installs Node.js if missing, clones this repo to `/opt/tunnel-panel`, builds, generates an admin account (random password, printed once — same pattern as the agent's bearer token), and runs it as `tunnel-panel.service`.
 
-**Binds to `127.0.0.1:3000` by default, not the public interface.** The panel has no TLS of its own and holds every registered server's bearer token, so the safe default is reaching it over an SSH tunnel (the install script prints the exact command). Pass `--public` to bind `0.0.0.0` instead, only if you're putting a real reverse proxy with TLS in front of it yourself.
+**Binds to `127.0.0.1:3000` by default, not the public interface.** The panel has no TLS of its own and holds every registered server's bearer token, so the safe default is reaching it over an SSH tunnel (the install script prints the exact command).
+
+**For direct access with a real certificate**, point a domain's DNS at this server first, then:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/dr-hoseyn/tunnel-panel/main/panel/install.sh) --domain panel.example.com
+```
+
+This installs [Caddy](https://caddyserver.com) as a reverse proxy in front of the panel; Caddy obtains and auto-renews a real Let's Encrypt certificate for that domain with no further config. The panel itself still only binds to `127.0.0.1` — only Caddy is public. (Let's Encrypt can't issue a certificate for a bare IP, so this only works with a real domain already pointed here.)
+
+`--public` binds the panel directly to `0.0.0.0` instead (plaintext HTTP) — only for when you're fronting this with your own separately-managed reverse proxy/TLS. Ignored if `--domain` is given.
 
 Re-running the script later pulls and rebuilds in place; it won't overwrite an existing admin account or generate a new password.
 

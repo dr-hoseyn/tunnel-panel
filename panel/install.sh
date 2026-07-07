@@ -15,6 +15,16 @@
 # risk of a plaintext-HTTP login page on the open internet.
 set -euo pipefail
 
+# Runs headless (bash <(curl ...), no TTY) -- apt must never stop to ask
+# anything. Without this, Ubuntu's needrestart hook in particular can pop an
+# interactive "which services should be restarted?" dialog after installing
+# packages, which silently stalls/short-circuits the apt-get invocation with
+# nothing obviously wrong in the log (this is what happened during testing:
+# `apt-get install -y build-essential` appeared to run, but the same session
+# still couldn't find `make` a few lines later).
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+
 REPO_URL="https://github.com/dr-hoseyn/tunnel-panel.git"
 INSTALL_DIR="/opt/tunnel-panel"
 SERVICE_FILE="/etc/systemd/system/tunnel-panel.service"

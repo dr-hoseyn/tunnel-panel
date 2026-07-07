@@ -109,14 +109,14 @@ fi
 if [[ -d "${INSTALL_DIR}/.git" ]]; then
 echo "Existing install found, updating..."
 # This clone is fully owned by this installer -- nothing in it is meant to
-# be hand-edited. `npm install` below can leave package-lock.json locally
-# modified (platform-specific optional dependency entries resolving
-# differently than what's committed), which would otherwise block a plain
-# `git pull --ff-only` on every subsequent run with "local changes would be
-# overwritten". Discarding tracked-file changes here is safe specifically
-# because of that ownership -- it never touches .env/dev.db/node_modules
-# (untracked, gitignored).
-git -C "$INSTALL_DIR" checkout -- .
+# be hand-edited. `reset --hard` (not just `checkout -- .`) because `npm
+# install` can leave package-lock.json changes *staged*, not just modified
+# in the working tree, depending on the npm version; `checkout -- .` alone
+# doesn't touch the index and wasn't enough to unblock a real run. Safe
+# specifically because of that ownership -- HEAD is always what's in git,
+# and .env/dev.db/node_modules are untracked/gitignored so this never
+# touches them either way.
+git -C "$INSTALL_DIR" reset --hard HEAD
 git -C "$INSTALL_DIR" pull --ff-only
 else
 echo "Cloning ${REPO_URL}..."
@@ -126,7 +126,13 @@ fi
 cd "${INSTALL_DIR}/panel"
 
 echo "Installing dependencies (this can take a minute)..."
-npm install --no-audit --no-fund
+# npm ci, not npm install: it never rewrites package-lock.json (npm install
+# can, e.g. with platform-specific optional dependency entries resolving
+# differently than what was committed from a different OS) -- this is what
+# was dirtying the lockfile and breaking the *next* run's `git pull` above,
+# even after adding the reset, since it would just get re-dirtied every
+# time regardless of what happened before `npm install` ran.
+npm ci --no-audit --no-fund
 
 ENV_FILE="${INSTALL_DIR}/panel/.env"
 if [[ ! -f "$ENV_FILE" ]]; then

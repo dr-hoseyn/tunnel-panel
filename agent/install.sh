@@ -68,6 +68,17 @@ else
 echo "Existing token found at ${DATA_DIR}/token.hash -- leaving it as is."
 fi
 
+# Generate (or load, if it already exists) the TLS cert now, before the
+# service ever starts -- not after. The service's own startup path also
+# calls LoadOrGenerate, and if nothing has created the cert yet by the time
+# `systemctl enable --now` returns, this command and the freshly-started
+# service race to generate it independently: whichever writes the cert file
+# last wins on disk, but the fingerprint already printed to the user could
+# be from the *other* one, so it silently wouldn't match what the running
+# service actually presents. Doing this first makes the service's own
+# LoadOrGenerate call a guaranteed no-op load of what's already on disk.
+FINGERPRINT=$("$BIN_PATH" -fingerprint -data-dir "$DATA_DIR")
+
 cp "$(dirname "$0")/tunnel-agent.service" "$SERVICE_FILE" 2>/dev/null || cat > "$SERVICE_FILE" <<'EOF'
 [Unit]
 Description=Tunnel Panel Agent
@@ -93,4 +104,4 @@ systemctl enable --now tunnel-agent.service
 echo ""
 echo "tunnel-agent ${tag} installed and running on port 8443."
 echo "Fingerprint for verifying this server when you register it in the panel:"
-"$BIN_PATH" -fingerprint -data-dir "$DATA_DIR"
+echo "$FINGERPRINT"

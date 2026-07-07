@@ -1,0 +1,36 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// Phase 1: single admin, no registration flow -- seeded via prisma/seed.ts.
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+}
+
+// agentToken is stored in cleartext for phase 1 (single-admin, single-
+// operator MVP scope). Encrypting it at rest is a known gap -- see the
+// panel README's security notes -- before this handles multiple untrusted
+// operators sharing one panel instance.
+model Server {
+  id             String   @id @default(cuid())
+  name           String
+  host           String
+  agentPort      Int      @default(8443)
+  agentToken     String
+  tlsFingerprint String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}

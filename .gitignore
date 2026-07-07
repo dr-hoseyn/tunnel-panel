@@ -13,7 +13,9 @@ panel/.env
 panel/.env.local
 panel/.env*.local
 
-# Prisma / SQLite
+# Prisma / SQLite (dev.db lands at the panel root, matching DATABASE_URL="file:./dev.db")
+panel/*.db
+panel/*.db-journal
 panel/prisma/*.db
 panel/prisma/*.db-journal
 

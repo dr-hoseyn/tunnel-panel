@@ -1,0 +1,16 @@
+[Unit]
+Description=Tunnel Panel Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/tunnel-agent -listen :8443 -data-dir /etc/tunnel-agent -script /opt/tunnel-manager/tunnel-manager.sh
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

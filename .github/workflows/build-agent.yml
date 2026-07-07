@@ -1,0 +1,58 @@
+name: Build agent
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agent/**'
+      - '.github/workflows/build-agent.yml'
+  pull_request:
+    paths:
+      - 'agent/**'
+  release:
+    types: [published]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: go vet ./...
+      - run: gofmt -l . | (! grep .)
+      - run: go test ./... -v
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    strategy:
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: Build
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: go build -trimpath -ldflags="-s -w" -o "tunnel-agent-linux-${{ matrix.goarch }}" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tunnel-agent-linux-${{ matrix.goarch }}
+          path: agent/tunnel-agent-linux-${{ matrix.goarch }}
+      - name: Attach to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "tunnel-agent-linux-${{ matrix.goarch }}"

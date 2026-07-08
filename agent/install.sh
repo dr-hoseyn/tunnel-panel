@@ -107,6 +107,14 @@ EOF
 systemctl daemon-reload
 systemctl enable --now tunnel-agent.service
 
+# Open the agent's port if ufw is managing this host's firewall -- otherwise
+# it defaults to deny-incoming and the panel can never reach the agent it
+# just installed. Same pattern tunnel-manager's own cores use per-tunnel
+# (see core/backhaul/core.sh's `ufw allow`).
+if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
+ufw allow 8443/tcp > /dev/null 2>&1
+fi
+
 echo ""
 echo "tunnel-agent ${tag} installed and running on port 8443."
 echo "Fingerprint for verifying this server when you register it in the panel:"

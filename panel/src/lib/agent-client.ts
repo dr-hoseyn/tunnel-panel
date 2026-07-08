@@ -52,7 +52,17 @@ export async function agentGet(target: AgentTarget, path: string): Promise<strin
           }
           return undefined;
         },
-        timeout: 10_000,
+        // Every path this hits (/api/v1/metrics, /api/v1/tunnels) shells
+        // out to tunnel-manager.sh on the agent side, which has its own
+        // 10s timeout (agent/main.go's tunnelscript.Runner) and up to 15s
+        // to write the response (http.Server's WriteTimeout). A client
+        // timeout equal to the agent's own script timeout was a race: on
+        // any server where the script legitimately took close to 10s, the
+        // client gave up right as the agent was about to answer, and the
+        // resulting error ("agent request timed out") looked identical to
+        // a real connectivity problem. 25s comfortably clears both of the
+        // agent's own timeouts with margin.
+        timeout: 25_000,
       },
       (res) => {
         let data = "";

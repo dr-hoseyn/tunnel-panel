@@ -187,7 +187,13 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now tunnel-panel.service
+systemctl enable tunnel-panel.service
+# `enable --now` is a no-op on an already-running service -- it does NOT
+# restart it. On an update run, that left the old process (from before
+# this run's `npm run build`) serving stale code indefinitely even though
+# the new build was sitting right there on disk, fully built. `restart`
+# is what actually makes an update take effect.
+systemctl restart tunnel-panel.service
 
 if [[ -n "$DOMAIN" ]]; then
 if ! command -v caddy &> /dev/null; then

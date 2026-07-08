@@ -105,7 +105,12 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now tunnel-agent.service
+systemctl enable tunnel-agent.service
+# `enable --now` is a no-op on an already-running service -- on a version
+# update, the already-running process would keep serving the old binary
+# indefinitely even after it's been replaced on disk above. `restart` is
+# what actually makes an update take effect.
+systemctl restart tunnel-agent.service
 
 # Open the agent's port if ufw is managing this host's firewall -- otherwise
 # it defaults to deny-incoming and the panel can never reach the agent it

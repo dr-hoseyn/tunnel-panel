@@ -2,13 +2,11 @@ import { NodeSSH } from "node-ssh";
 
 /**
  * Provisions a fresh VPS over SSH: checks tunnel-manager.sh is already
- * installed there (this deliberately does NOT try to auto-install it --
- * tunnel-manager's own install.sh ends by exec-ing into its interactive
- * menu, which would hang forever with no TTY attached; see agent/README.md
- * and the commit history for why this boundary is intentional, not an
- * oversight), then runs the existing agent/install.sh remotely and parses
- * its machine-readable result line. SSH credentials passed in here are used
- * once for this connection and never persisted anywhere.
+ * installed there, optionally installing it first if asked to (see
+ * installTunnelManager below), then runs the existing agent/install.sh
+ * remotely and parses its machine-readable result line. SSH credentials
+ * passed in here are used once for this connection and never persisted
+ * anywhere.
  */
 
 const AGENT_INSTALL_URL =
@@ -23,7 +21,7 @@ export class ProvisionError extends Error {
     /** Machine-readable marker for cases the UI needs to react to
      * specifically, e.g. offering a "reset & retry" action -- string
      * matching on `message` would be fragile. */
-    public code?: "agent-already-installed",
+    public code?: "agent-already-installed" | "tunnel-manager-missing",
   ) {
     super(message);
     this.name = "ProvisionError";
@@ -44,6 +42,15 @@ export interface SshCredentials {
    * else that had it stops working); it does not touch the agent's TLS
    * cert/fingerprint or tunnel-manager itself. */
   resetExisting?: boolean;
+  /** If tunnel-manager.sh isn't found on the server (see the
+   * "tunnel-manager-missing" case below), the caller can set this to have
+   * us install it ourselves over the same SSH connection before
+   * continuing. tunnel-manager's own installer ends by exec-ing into its
+   * interactive menu -- harmless here since the actual install (an atomic
+   * directory replace) completes before that point; we just bound the
+   * whole thing with a server-side `timeout` so the SSH command still
+   * returns instead of hanging on that menu forever. */
+  installTunnelManager?: boolean;
 }
 
 export interface ProvisionResult {
@@ -75,18 +82,44 @@ export async function provisionAgentViaSsh(creds: SshCredentials): Promise<Provi
       );
     }
 
-    const precheck = await withTimeout(
-      ssh.execCommand(
-        "test -f /opt/tunnel-manager/tunnel-manager.sh && echo EXISTS || echo MISSING",
-      ),
-      15_000,
-      "Checking for tunnel-manager.sh timed out",
-    );
-    if (precheck.stdout.trim() !== "EXISTS") {
-      throw new ProvisionError(
-        "tunnel-manager.sh is not installed on this server yet. Install it first over SSH " +
-          `yourself, then try again: ${TUNNEL_MANAGER_INSTALL_CMD}`,
+    const tunnelManagerCheck = () =>
+      withTimeout(
+        ssh.execCommand(
+          "test -f /opt/tunnel-manager/tunnel-manager.sh && echo EXISTS || echo MISSING",
+        ),
+        15_000,
+        "Checking for tunnel-manager.sh timed out",
       );
+
+    let precheck = await tunnelManagerCheck();
+    if (precheck.stdout.trim() !== "EXISTS") {
+      if (!creds.installTunnelManager) {
+        throw new ProvisionError(
+          "tunnel-manager.sh is not installed on this server yet. Install it first over SSH " +
+            `yourself, then try again: ${TUNNEL_MANAGER_INSTALL_CMD}`,
+          "tunnel-manager-missing",
+        );
+      }
+
+      // `< /dev/null` makes the interactive menu's `read` calls hit EOF
+      // immediately (instead of depending on however ssh2/node-ssh happens
+      // to handle a session with no stdin, which otherwise varies), so it
+      // spins briefly and predictably until `timeout` kills it -- by which
+      // point the actual install (an atomic mv of the whole directory,
+      // done well before the menu is ever reached) has already landed.
+      const install = await withTimeout(
+        ssh.execCommand(`timeout 90 bash -c '${TUNNEL_MANAGER_INSTALL_CMD}' < /dev/null`),
+        100_000,
+        "Installing tunnel-manager timed out after 100 seconds",
+      );
+
+      precheck = await tunnelManagerCheck();
+      if (precheck.stdout.trim() !== "EXISTS") {
+        throw new ProvisionError(
+          `Installing tunnel-manager failed: ${(install.stderr || install.stdout).slice(-2000)}`,
+          "tunnel-manager-missing",
+        );
+      }
     }
 
     if (creds.resetExisting) {

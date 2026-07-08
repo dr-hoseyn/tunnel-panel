@@ -18,6 +18,7 @@ export async function POST(request: Request) {
   const sshPrivateKey = typeof body?.sshPrivateKey === "string" ? body.sshPrivateKey : undefined;
   const agentPort = Number.isInteger(body?.agentPort) ? body.agentPort : 8443;
   const resetExisting = body?.resetExisting === true;
+  const installTunnelManager = body?.installTunnelManager === true;
 
   if (!name || !host || (!sshPassword && !sshPrivateKey)) {
     return NextResponse.json(
@@ -34,6 +35,7 @@ export async function POST(request: Request) {
       password: sshPassword,
       privateKey: sshPrivateKey,
       resetExisting,
+      installTunnelManager,
     });
 
     const server = await registerServer({

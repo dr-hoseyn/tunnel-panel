@@ -5,6 +5,22 @@ import { useState } from "react";
 
 type Mode = "ssh" | "manual";
 
+// Errors the SSH provisioning flow can recover from itself, given
+// confirmation -- maps the error code the API returns to the extra body
+// field that resubmitting with consent sets, and what the retry button says.
+const RECOVERABLE_ERRORS: Record<string, { field: string; label: string; pendingLabel: string }> = {
+  "agent-already-installed": {
+    field: "resetExisting",
+    label: "Reset token & retry",
+    pendingLabel: "Resetting...",
+  },
+  "tunnel-manager-missing": {
+    field: "installTunnelManager",
+    label: "Install tunnel-manager & continue",
+    pendingLabel: "Installing tunnel-manager... (can take a minute or two)",
+  },
+};
+
 export function AddServerForm() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -58,9 +74,9 @@ export function AddServerForm() {
     submit("/api/servers/provision", body);
   }
 
-  function retryWithReset() {
+  function retryWithField(field: string) {
     if (!lastSshBody) return;
-    submit("/api/servers/provision", { ...lastSshBody, resetExisting: true });
+    submit("/api/servers/provision", { ...lastSshBody, [field]: true });
   }
 
   function handleManualSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -102,14 +118,14 @@ export function AddServerForm() {
       {error && (
         <div className="mb-3 rounded border border-red-900 bg-red-950 px-3 py-2 text-xs text-red-300">
           <p>{error}</p>
-          {errorCode === "agent-already-installed" && lastSshBody && (
+          {errorCode && RECOVERABLE_ERRORS[errorCode] && lastSshBody && (
             <button
               type="button"
-              onClick={retryWithReset}
+              onClick={() => retryWithField(RECOVERABLE_ERRORS[errorCode].field)}
               disabled={submitting}
               className="mt-2 rounded bg-red-900 px-3 py-1.5 font-medium text-red-100 hover:bg-red-800 disabled:opacity-50"
             >
-              {submitting ? "Resetting..." : "Reset token & retry"}
+              {submitting ? RECOVERABLE_ERRORS[errorCode].pendingLabel : RECOVERABLE_ERRORS[errorCode].label}
             </button>
           )}
         </div>

@@ -10,11 +10,16 @@ export function AddServerForm() {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<Mode>("ssh");
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Kept so "Reset & retry" can resubmit the same SSH provisioning request
+  // with resetExisting added, without making the operator retype everything.
+  const [lastSshBody, setLastSshBody] = useState<Record<string, unknown> | null>(null);
 
   async function submit(url: string, body: Record<string, unknown>) {
     setSubmitting(true);
     setError(null);
+    setErrorCode(null);
     try {
       const res = await fetch(url, {
         method: "POST",
@@ -24,6 +29,7 @@ export function AddServerForm() {
       const data = await res.json();
       if (!res.ok) {
         setError(data.error ?? "Failed to register server");
+        setErrorCode(data.code ?? null);
         return;
       }
       setOpen(false);
@@ -39,7 +45,7 @@ export function AddServerForm() {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
     const authMethod = form.get("authMethod");
-    submit("/api/servers/provision", {
+    const body = {
       name: form.get("name"),
       host: form.get("host"),
       sshPort: Number(form.get("sshPort") || 22),
@@ -47,7 +53,14 @@ export function AddServerForm() {
       sshPassword: authMethod === "password" ? form.get("sshPassword") : undefined,
       sshPrivateKey: authMethod === "key" ? form.get("sshPrivateKey") : undefined,
       agentPort: Number(form.get("agentPort") || 8443),
-    });
+    };
+    setLastSshBody(body);
+    submit("/api/servers/provision", body);
+  }
+
+  function retryWithReset() {
+    if (!lastSshBody) return;
+    submit("/api/servers/provision", { ...lastSshBody, resetExisting: true });
   }
 
   function handleManualSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -87,9 +100,19 @@ export function AddServerForm() {
       </div>
 
       {error && (
-        <p className="mb-3 rounded border border-red-900 bg-red-950 px-3 py-2 text-xs text-red-300">
-          {error}
-        </p>
+        <div className="mb-3 rounded border border-red-900 bg-red-950 px-3 py-2 text-xs text-red-300">
+          <p>{error}</p>
+          {errorCode === "agent-already-installed" && lastSshBody && (
+            <button
+              type="button"
+              onClick={retryWithReset}
+              disabled={submitting}
+              className="mt-2 rounded bg-red-900 px-3 py-1.5 font-medium text-red-100 hover:bg-red-800 disabled:opacity-50"
+            >
+              {submitting ? "Resetting..." : "Reset token & retry"}
+            </button>
+          )}
+        </div>
       )}
 
       {mode === "ssh" ? (

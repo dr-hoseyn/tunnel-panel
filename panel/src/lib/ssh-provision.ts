@@ -18,7 +18,13 @@ const TUNNEL_MANAGER_INSTALL_CMD =
 const RESULT_PREFIX = "TUNNEL_AGENT_INSTALL_RESULT: ";
 
 export class ProvisionError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    /** Machine-readable marker for cases the UI needs to react to
+     * specifically, e.g. offering a "reset & retry" action -- string
+     * matching on `message` would be fragile. */
+    public code?: "agent-already-installed",
+  ) {
     super(message);
     this.name = "ProvisionError";
   }
@@ -30,6 +36,14 @@ export interface SshCredentials {
   username: string;
   password?: string;
   privateKey?: string;
+  /** If a previous agent install's token can't be recovered (see the
+   * "agent-already-installed" case below), the caller can set this to have
+   * us wipe that stored token hash ourselves over the same SSH connection
+   * and re-provision -- the operator doesn't need to SSH in by hand. This
+   * only invalidates that server's bearer token (the panel or anything
+   * else that had it stops working); it does not touch the agent's TLS
+   * cert/fingerprint or tunnel-manager itself. */
+  resetExisting?: boolean;
 }
 
 export interface ProvisionResult {
@@ -75,6 +89,19 @@ export async function provisionAgentViaSsh(creds: SshCredentials): Promise<Provi
       );
     }
 
+    if (creds.resetExisting) {
+      // User-confirmed action (surfaced as an explicit "Reset & retry"
+      // button after a first attempt fails with "agent-already-installed"
+      // below) -- only rotates this one server's bearer token over the
+      // SSH connection already established for this same request. Does
+      // not touch the agent's TLS cert/fingerprint or tunnel-manager.
+      await withTimeout(
+        ssh.execCommand("rm -f /etc/tunnel-agent/token.hash"),
+        15_000,
+        "Resetting the existing agent token timed out",
+      );
+    }
+
     const result = await withTimeout(
       ssh.execCommand(`bash <(curl -fsSL ${AGENT_INSTALL_URL})`),
       180_000,
@@ -104,11 +131,11 @@ export async function provisionAgentViaSsh(creds: SshCredentials): Promise<Provi
 
     if (!parsed.token) {
       throw new ProvisionError(
-        "This server already had an agent installed with a token that can't be retrieved " +
-          "again (it's only ever shown once, at install time). Either use the manual " +
-          "registration form with that server's existing token/fingerprint, or run " +
-          "'rm -f /etc/tunnel-agent/token.hash' on that server over SSH and try provisioning " +
-          "again.",
+        "This server already had an agent installed. Its original token can't be retrieved " +
+          "(it's only ever shown once, at install time) -- reset it to get a new one, or use " +
+          "the manual registration form if you still have that server's existing " +
+          "token/fingerprint.",
+        "agent-already-installed",
       );
     }
 

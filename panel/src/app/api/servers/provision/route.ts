@@ -17,6 +17,7 @@ export async function POST(request: Request) {
   const sshPassword = typeof body?.sshPassword === "string" ? body.sshPassword : undefined;
   const sshPrivateKey = typeof body?.sshPrivateKey === "string" ? body.sshPrivateKey : undefined;
   const agentPort = Number.isInteger(body?.agentPort) ? body.agentPort : 8443;
+  const resetExisting = body?.resetExisting === true;
 
   if (!name || !host || (!sshPassword && !sshPrivateKey)) {
     return NextResponse.json(
@@ -32,6 +33,7 @@ export async function POST(request: Request) {
       username: sshUsername,
       password: sshPassword,
       privateKey: sshPrivateKey,
+      resetExisting,
     });
 
     const server = await registerServer({
@@ -46,7 +48,8 @@ export async function POST(request: Request) {
   } catch (err) {
     if (err instanceof ProvisionError || err instanceof RegisterServerError) {
       const status = err instanceof RegisterServerError ? err.status : 502;
-      return NextResponse.json({ error: err.message }, { status });
+      const code = err instanceof ProvisionError ? err.code : undefined;
+      return NextResponse.json({ error: err.message, code }, { status });
     }
     throw err;
   }

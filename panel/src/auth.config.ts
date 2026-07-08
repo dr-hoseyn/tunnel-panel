@@ -1,3 +1,4 @@
+import { NextResponse } from "next/server";
 import type { NextAuthConfig } from "next-auth";
 
 /**
@@ -20,8 +21,26 @@ export const authConfig: NextAuthConfig = {
   // only thing that can reach this app -- it always binds to 127.0.0.1.
   trustHost: true,
   callbacks: {
-    authorized({ auth }) {
-      return !!auth?.user;
+    authorized({ auth, request }) {
+      if (auth?.user) return true;
+      // Self-hosted `next start -H <host> -p <port>` (what install.sh
+      // runs, behind Caddy) builds request.nextUrl from its own bind
+      // host/port, not the real incoming Host header -- Next.js only
+      // trusts the Host header for this when it detects it's running on
+      // Vercel. Left to its default, NextAuth's own unauthorized-redirect
+      // would set callbackUrl from request.nextUrl.href and bake in that
+      // wrong origin (e.g. "http://localhost:3000/dashboard"), breaking
+      // the redirect after a successful login. Building the redirect
+      // ourselves with a relative callbackUrl sidesteps it: the Location
+      // header itself still resolves correctly (relative to whatever
+      // origin the browser is actually on), only the query *value* was
+      // ever wrong.
+      const loginUrl = request.nextUrl.clone();
+      const callbackUrl = request.nextUrl.pathname + request.nextUrl.search;
+      loginUrl.pathname = "/login";
+      loginUrl.search = "";
+      loginUrl.searchParams.set("callbackUrl", callbackUrl);
+      return NextResponse.redirect(loginUrl);
     },
   },
 };

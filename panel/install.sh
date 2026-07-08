@@ -211,6 +211,20 @@ mkdir -p /etc/caddy/conf.d
 # Composable rather than overwriting the main Caddyfile outright, in case
 # this Caddy instance ends up fronting anything else on this server later.
 touch /etc/caddy/Caddyfile
+
+# Caddy advertises HTTP/3 (QUIC, over UDP/443) by default via Alt-Svc. Once
+# a browser has seen that once, it tries QUIC first on later visits -- and
+# UDP/443 is routinely blocked or degraded by cloud-provider firewalls and,
+# especially relevant for this project's users, by ISP-level filtering that
+# specifically targets QUIC. When that happens the connection doesn't fail
+# over cleanly, it just hangs, which looks exactly like the site being
+# down. Restricting to h1/h2 (global option, must be the first block in
+# the Caddyfile) avoids that failure mode entirely.
+if ! grep -q "protocols h1 h2" /etc/caddy/Caddyfile 2>/dev/null; then
+{ printf '{\n\tservers {\n\t\tprotocols h1 h2\n\t}\n}\n\n'; cat /etc/caddy/Caddyfile; } > /etc/caddy/Caddyfile.new
+mv /etc/caddy/Caddyfile.new /etc/caddy/Caddyfile
+fi
+
 grep -qxF "import /etc/caddy/conf.d/*.caddy" /etc/caddy/Caddyfile || echo "import /etc/caddy/conf.d/*.caddy" >> /etc/caddy/Caddyfile
 cat > /etc/caddy/conf.d/tunnel-panel.caddy <<EOF
 ${DOMAIN} {

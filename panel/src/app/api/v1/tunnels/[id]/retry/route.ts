@@ -1,0 +1,19 @@
+import { NextResponse } from "next/server";
+import { retryTunnelDeploy, OrchestratorError } from "@/lib/tunnel-orchestrator";
+import { requireRoleResponse } from "@/lib/rbac";
+
+export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireRoleResponse("OPERATOR");
+  if ("response" in auth) return auth.response;
+
+  const { id } = await params;
+  try {
+    const { deploymentId } = await retryTunnelDeploy(id);
+    return NextResponse.json({ deploymentId }, { status: 202 });
+  } catch (err) {
+    if (err instanceof OrchestratorError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
+  }
+}

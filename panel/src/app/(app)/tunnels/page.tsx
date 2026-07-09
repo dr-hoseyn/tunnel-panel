@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { TunnelStatusBadge } from "@/components/TunnelStatusBadge";
+import { TunnelRowActions } from "@/components/TunnelRowActions";
 import { Cable, Plus } from "lucide-react";
 
 function formatBytes(rx: bigint | null | undefined): string {
@@ -73,6 +74,7 @@ export default async function TunnelsPage() {
                 <th className="px-4 py-2 font-normal">TX</th>
                 <th className="px-4 py-2 font-normal">Uptime</th>
                 <th className="px-4 py-2 font-normal">Last check</th>
+                <th className="px-4 py-2 font-normal text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -96,6 +98,9 @@ export default async function TunnelsPage() {
                     <td className="px-4 py-3 text-neutral-400">{formatUptime(t.createdAt, t.status)}</td>
                     <td className="px-4 py-3 text-neutral-500">
                       {t.lastCheckedAt ? t.lastCheckedAt.toLocaleTimeString() : "—"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <TunnelRowActions id={t.id} status={t.status} />
                     </td>
                   </tr>
                 );

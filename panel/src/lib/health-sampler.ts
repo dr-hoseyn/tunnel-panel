@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db";
 import { agentGet } from "@/lib/agent-client";
 import { decryptSecret } from "@/lib/crypto";
 import { restartTunnel } from "@/lib/tunnel-orchestrator";
-import { EventCategory, Severity, TunnelStatus } from "@/generated/prisma/enums";
+import { DeploymentStatus, EventCategory, Severity, TunnelStatus } from "@/generated/prisma/enums";
 
 /**
  * Server-side background poller: health-checks every tunnel via its two
@@ -50,6 +50,14 @@ export function startHealthSampler(): void {
 /** Exported for tests -- startHealthSampler wraps this in a setInterval for
  * production use; tests drive it directly against a fake clock of calls. */
 export async function runSampleCycle(): Promise<void> {
+  // Server reachability must not depend on that server happening to own a
+  // tunnel that's both non-DEPLOYING and gets sampled -- a server with no
+  // tunnels, or whose only tunnel is stuck/failed/mid-deploy, would
+  // otherwise never get a lastSeenAt update and would show Offline forever
+  // even while its agent is perfectly reachable. Pinged independently, every
+  // cycle, for every registered server.
+  await pingAllServers();
+
   const tunnels = await prisma.tunnel.findMany({
     where: { status: { notIn: [TunnelStatus.DEPLOYING, TunnelStatus.REMOVING] } },
     include: { sourceServer: true, destServer: true },
@@ -63,9 +71,71 @@ export async function runSampleCycle(): Promise<void> {
     }
   }
 
+  await sweepStuckDeployments();
+
   cycles += 1;
   if (cycles % 20 === 0) {
     await prisma.tunnelStat.deleteMany({ where: { timestamp: { lt: new Date(Date.now() - STAT_RETENTION_MS) } } });
+  }
+}
+
+async function pingAllServers(): Promise<void> {
+  const servers = await prisma.server.findMany({
+    select: { id: true, host: true, agentPort: true, agentTokenEnc: true, tlsFingerprint: true },
+  });
+  await Promise.all(
+    servers.map(async (server) => {
+      try {
+        await agentGet(
+          {
+            host: server.host,
+            port: server.agentPort,
+            token: decryptSecret(server.agentTokenEnc),
+            tlsFingerprint: server.tlsFingerprint,
+          },
+          "/api/v1/agent/info",
+        );
+        await prisma.server.update({ where: { id: server.id }, data: { lastSeenAt: new Date() } });
+      } catch {
+        // Unreachable -- leave lastSeenAt as-is, its age is the Offline signal.
+      }
+    }),
+  );
+}
+
+/** Defense in depth for the exact bug this was written to catch: a tunnel
+ * whose deploy handler threw before ever updating tunnel status (any future
+ * code path that repeats that mistake, not just the one already fixed in
+ * tunnel-orchestrator.ts). Anything sitting at DEPLOYING/REMOVING for
+ * longer than a deploy should ever reasonably take, with no deployment of
+ * its own still queued or running, gets force-marked FAILED and logged --
+ * never left stuck indefinitely with no way for the UI to act on it. */
+const STUCK_DEPLOYMENT_TIMEOUT_MS = 10 * 60 * 1000;
+
+async function sweepStuckDeployments(): Promise<void> {
+  const cutoff = new Date(Date.now() - STUCK_DEPLOYMENT_TIMEOUT_MS);
+  const stuck = await prisma.tunnel.findMany({
+    where: {
+      status: { in: [TunnelStatus.DEPLOYING, TunnelStatus.REMOVING] },
+      updatedAt: { lt: cutoff },
+    },
+  });
+  for (const tunnel of stuck) {
+    const activeDeployment = await prisma.deployment.findFirst({
+      where: { tunnelId: tunnel.id, status: { in: [DeploymentStatus.QUEUED, DeploymentStatus.RUNNING] } },
+    });
+    if (activeDeployment) continue; // genuinely still in flight, not stuck
+
+    await prisma.tunnel.update({
+      where: { id: tunnel.id },
+      data: { status: TunnelStatus.FAILED, lastCheckedAt: new Date() },
+    });
+    await logEvent(
+      tunnel.id,
+      Severity.ERROR,
+      "TUNNEL_DEPLOY_TIMED_OUT",
+      `Tunnel "${tunnel.name}" sat at ${tunnel.status} for over ${STUCK_DEPLOYMENT_TIMEOUT_MS / 60000} minutes with no deployment in progress -- forced to FAILED so it can be retried or deleted.`,
+    );
   }
 }
 

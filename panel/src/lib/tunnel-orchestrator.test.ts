@@ -98,7 +98,7 @@ vi.mock("@/lib/agent-client", () => ({
   agentDelete: (...args: unknown[]) => agentDeleteMock(...args),
 }));
 
-const { createTunnel, deleteTunnel, startTunnel } = await import("./tunnel-orchestrator");
+const { createTunnel, deleteTunnel, startTunnel, retryTunnelDeploy } = await import("./tunnel-orchestrator");
 const { encryptSecret } = await import("./crypto");
 
 function seedServer(id: string, name: string, host: string) {
@@ -174,10 +174,33 @@ describe("createTunnel", () => {
 
     expect(finished.status).toBe("FAILED");
     expect(agentDeleteMock).toHaveBeenCalledTimes(1);
-    expect(fakePrisma.__tunnels.has(tunnel.id)).toBe(false);
+    // The tunnel row is kept (status FAILED), not deleted -- so it stays
+    // visible with its error and a Retry/Delete choice, instead of silently
+    // vanishing and leaving the user with no idea what happened.
+    expect(fakePrisma.__tunnels.has(tunnel.id)).toBe(true);
+    expect(fakePrisma.__tunnels.get(tunnel.id)?.status).toBe("FAILED");
     expect(
-      fakePrisma.__events.some((e) => e.type === "TUNNEL_CREATE_ROLLED_BACK" && e.severity === "ERROR"),
+      fakePrisma.__events.some((e) => e.type === "TUNNEL_DEPLOY_FAILED" && e.severity === "ERROR"),
     ).toBe(true);
+  });
+
+  it("marks the tunnel FAILED (never leaves it at DEPLOYING) when the source side itself fails", async () => {
+    agentPostMock.mockRejectedValue(new Error("source agent unreachable"));
+
+    const { tunnel, deploymentId } = await createTunnel({
+      name: "Source Fails",
+      core: "BACKHAUL" as never,
+      sourceServerId: "iran-1",
+      destServerId: "germany-1",
+      port: 3080,
+    });
+    const finished = await waitForDeployment(deploymentId);
+
+    expect(finished.status).toBe("FAILED");
+    // Nothing ever deployed anywhere, so there's nothing to roll back --
+    // just a clean FAILED status, never left at DEPLOYING.
+    expect(agentDeleteMock).not.toHaveBeenCalled();
+    expect(fakePrisma.__tunnels.get(tunnel.id)?.status).toBe("FAILED");
   });
 
   it("routes forwarded ports to the correct side per core (hysteria2 -> client only)", async () => {
@@ -195,6 +218,47 @@ describe("createTunnel", () => {
     const [sourceCall, destCall] = agentPostMock.mock.calls;
     expect((sourceCall[2] as { ports?: unknown }).ports).toBeUndefined();
     expect((destCall[2] as { ports?: unknown[] }).ports).toEqual([{ remote: 22, local: 2222 }]);
+  });
+});
+
+describe("retryTunnelDeploy", () => {
+  it("re-deploys a FAILED tunnel from its stored config and reaches RUNNING", async () => {
+    agentPostMock.mockImplementation(async (_target: unknown, _path: string, body: { role: string }) => {
+      if (body.role === "client") throw new Error("connection refused");
+      return "{}";
+    });
+    agentDeleteMock.mockResolvedValue("");
+    const { tunnel, deploymentId: firstDeploymentId } = await createTunnel({
+      name: "Retry Me",
+      core: "RATHOLE" as never,
+      sourceServerId: "iran-1",
+      destServerId: "germany-1",
+      port: 2333,
+    });
+    await waitForDeployment(firstDeploymentId);
+    expect(fakePrisma.__tunnels.get(tunnel.id)?.status).toBe("FAILED");
+
+    agentPostMock.mockReset();
+    agentPostMock.mockResolvedValue("{}");
+    const { deploymentId: retryDeploymentId } = await retryTunnelDeploy(tunnel.id);
+    const finished = await waitForDeployment(retryDeploymentId);
+
+    expect(finished.status).toBe("SUCCEEDED");
+    expect(fakePrisma.__tunnels.get(tunnel.id)?.status).toBe("RUNNING");
+  });
+
+  it("refuses to retry a tunnel that isn't FAILED", async () => {
+    fakePrisma.__tunnels.set("tunnel-running", {
+      id: "tunnel-running",
+      name: "Running",
+      core: "BACKHAUL",
+      status: "RUNNING",
+      sourceServerId: "iran-1",
+      destServerId: "germany-1",
+      config: { port: 3080, ports: [], extra: {} },
+      secretEnc: encryptSecret("s"),
+    });
+    await expect(retryTunnelDeploy("tunnel-running")).rejects.toMatchObject({ status: 409 });
   });
 });
 

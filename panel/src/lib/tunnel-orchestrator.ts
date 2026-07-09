@@ -116,16 +116,69 @@ export async function createTunnel(input: CreateTunnelInput) {
   const deploymentId = await DeploymentQueue.enqueue({
     tunnelId: tunnel.id,
     kind: DeploymentKind.CREATE,
-    // deployBothSides already does its own rollback (removing the source
-    // side and deleting the Tunnel row) when the destination fails -- the
+    // deployBothSides guarantees a terminal tunnel status itself (RUNNING or
+    // FAILED, never left at DEPLOYING) and does its own rollback -- the
     // queue's generic retry-the-whole-handler mechanism must not run a
-    // second time after that, or it would try to delete an already-deleted
-    // Tunnel row and re-attempt a deploy sequence that isn't idempotent.
+    // second time on top of that, or it would re-attempt a deploy sequence
+    // against a tunnel that's already been rolled back once.
     maxAttempts: 1,
     handler: (ctx) => deployBothSides(ctx, tunnel.id, descriptor, input, secret),
   });
 
   return { tunnel, deploymentId };
+}
+
+/** Re-runs the full two-sided deploy for an existing FAILED tunnel, reusing
+ * its already-stored config and secret -- the "Retry" action on a failed
+ * tunnel's detail page. Both sides are re-created from scratch (the agent's
+ * create endpoint is safe to call again once the failed attempt has been
+ * rolled back, since the tunnel id won't already exist on either agent). */
+export async function retryTunnelDeploy(tunnelId: string): Promise<{ deploymentId: string }> {
+  const tunnel = await loadTunnelOrThrow(tunnelId);
+  if (tunnel.status !== TunnelStatus.FAILED) {
+    throw new OrchestratorError("only a failed tunnel can be retried", 409);
+  }
+  const descriptor = getCoreDescriptor(tunnel.core);
+  const config = tunnel.config as unknown as { port: number; ports?: PortMappingInput[]; extra?: Record<string, string> };
+  const secret = decryptSecret(tunnel.secretEnc);
+
+  await prisma.tunnel.update({ where: { id: tunnelId }, data: { status: TunnelStatus.DEPLOYING } });
+
+  const input: CreateTunnelInput = {
+    name: tunnel.name,
+    core: tunnel.core,
+    sourceServerId: tunnel.sourceServerId,
+    destServerId: tunnel.destServerId,
+    port: config.port,
+    ports: config.ports,
+    extra: config.extra,
+  };
+
+  const deploymentId = await DeploymentQueue.enqueue({
+    tunnelId,
+    kind: DeploymentKind.CREATE,
+    maxAttempts: 1,
+    handler: (ctx) => deployBothSides(ctx, tunnelId, descriptor, input, secret),
+  });
+  return { deploymentId };
+}
+
+/** Marks a tunnel FAILED (never leaves it hanging at DEPLOYING) and records
+ * exactly why -- both as a queryable Event and as the error the caller
+ * re-throws, which the deployment queue's own catch already records into
+ * that Deployment's `steps`. */
+async function failDeployment(tunnelId: string, tunnelName: string, reason: string, serverId?: string): Promise<void> {
+  await prisma.tunnel.update({ where: { id: tunnelId }, data: { status: TunnelStatus.FAILED, lastCheckedAt: new Date() } });
+  await prisma.event.create({
+    data: {
+      category: EventCategory.DEPLOYMENT,
+      type: "TUNNEL_DEPLOY_FAILED",
+      severity: Severity.ERROR,
+      message: `Tunnel "${tunnelName}" failed to deploy: ${reason}`,
+      tunnelId,
+      serverId,
+    },
+  });
 }
 
 async function deployBothSides(
@@ -135,22 +188,42 @@ async function deployBothSides(
   input: CreateTunnelInput,
   secret: string,
 ) {
-  const source = await resolveServer(input.sourceServerId);
-  const dest = await resolveServer(input.destServerId);
-
-  // Source plays the driver's "server" role (see registry.ts's header
-  // comment for the source=server/destination=client convention) -- deploy
-  // it first so something is already listening before the destination's
-  // client role tries to dial in.
-  await ctx.step(`deploy-source-${source.name}`, "started");
-  await agentPost(
-    source.target,
-    "/api/v1/managed-tunnels",
-    buildCreateBody(descriptor, "server", tunnelId, secret, input.port, undefined, input.ports, input.extra),
-  );
-  await ctx.step(`deploy-source-${source.name}`, "ok");
-
+  // Every exit from this function must leave the tunnel at a terminal
+  // status (RUNNING or FAILED) -- never DEPLOYING. Whatever fails, however
+  // far it got, is caught here in one place rather than relying on each
+  // step to remember to update tunnel status on its own failure path (that
+  // per-step discipline is exactly what silently regressed once: the
+  // source-side deploy call had no try/catch of its own at all, so a
+  // failure there propagated straight past every status update and left
+  // the tunnel stuck at DEPLOYING forever with only the Deployment row --
+  // not the Tunnel itself -- ever marked FAILED).
+  let source: ResolvedTarget;
+  let dest: ResolvedTarget;
   try {
+    source = await resolveServer(input.sourceServerId);
+    dest = await resolveServer(input.destServerId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await ctx.step("resolve-servers", "failed", message);
+    await failDeployment(tunnelId, input.name, `could not resolve source/destination server: ${message}`);
+    throw err;
+  }
+
+  let sourceDeployed = false;
+  try {
+    // Source plays the driver's "server" role (see registry.ts's header
+    // comment for the source=server/destination=client convention) --
+    // deploy it first so something is already listening before the
+    // destination's client role tries to dial in.
+    await ctx.step(`deploy-source-${source.name}`, "started");
+    await agentPost(
+      source.target,
+      "/api/v1/managed-tunnels",
+      buildCreateBody(descriptor, "server", tunnelId, secret, input.port, undefined, input.ports, input.extra),
+    );
+    sourceDeployed = true;
+    await ctx.step(`deploy-source-${source.name}`, "ok");
+
     await ctx.step(`deploy-destination-${dest.name}`, "started");
     await agentPost(
       dest.target,
@@ -168,27 +241,26 @@ async function deployBothSides(
     );
     await ctx.step(`deploy-destination-${dest.name}`, "ok");
   } catch (err) {
-    await ctx.step("rollback", "started", "destination side failed to deploy -- removing source side");
-    try {
-      await agentDelete(source.target, `/api/v1/managed-tunnels/${tunnelId}`);
-      await ctx.step("rollback", "ok");
-    } catch (rollbackErr) {
-      await ctx.step(
-        "rollback",
-        "failed",
-        `could not remove the source side either: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`,
-      );
+    const message = err instanceof Error ? err.message : String(err);
+    if (sourceDeployed) {
+      await ctx.step("rollback", "started", "removing the side that already deployed");
+      try {
+        await agentDelete(source.target, `/api/v1/managed-tunnels/${tunnelId}`);
+        await ctx.step("rollback", "ok");
+      } catch (rollbackErr) {
+        await ctx.step(
+          "rollback",
+          "failed",
+          `could not remove the source side either: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`,
+        );
+      }
     }
-    await prisma.event.create({
-      data: {
-        category: EventCategory.DEPLOYMENT,
-        type: "TUNNEL_CREATE_ROLLED_BACK",
-        severity: Severity.ERROR,
-        message: `Tunnel "${input.name}" failed to deploy on ${dest.name} -- rolled back on ${source.name}: ${err instanceof Error ? err.message : String(err)}`,
-        serverId: input.destServerId,
-      },
-    });
-    await prisma.tunnel.delete({ where: { id: tunnelId } });
+    await failDeployment(
+      tunnelId,
+      input.name,
+      sourceDeployed ? `destination (${dest.name}) failed, rolled back on ${source.name}: ${message}` : `source (${source.name}) failed: ${message}`,
+      sourceDeployed ? input.destServerId : input.sourceServerId,
+    );
     throw err;
   }
 

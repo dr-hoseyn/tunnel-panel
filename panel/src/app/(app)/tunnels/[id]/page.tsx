@@ -11,10 +11,19 @@ export default async function TunnelDetailPage({ params }: { params: Promise<{ i
     include: {
       sourceServer: { select: { id: true, name: true, host: true } },
       destServer: { select: { id: true, name: true, host: true } },
+      deployments: { orderBy: { createdAt: "desc" }, take: 1 },
     },
   });
   if (!tunnel) {
     notFound();
+  }
+
+  const latestDeployment = tunnel.deployments[0];
+  let lastError: string | null = null;
+  if (latestDeployment?.status === "FAILED" && Array.isArray(latestDeployment.steps)) {
+    const steps = latestDeployment.steps as { step: string; status: string; message?: string }[];
+    const failedStep = [...steps].reverse().find((s) => s.status === "failed");
+    lastError = failedStep?.message ?? "Deployment failed (no further detail recorded).";
   }
 
   const stats = await prisma.tunnelStat.findMany({
@@ -40,6 +49,7 @@ export default async function TunnelDetailPage({ params }: { params: Promise<{ i
           lastRestartAt: tunnel.lastRestartAt?.toISOString() ?? null,
           sourceServer: tunnel.sourceServer,
           destServer: tunnel.destServer,
+          lastError,
         }}
         stats={stats.map((s) => ({
           timestamp: s.timestamp.toISOString(),

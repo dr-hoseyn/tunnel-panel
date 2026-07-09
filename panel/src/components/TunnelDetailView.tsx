@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Play, Square, RotateCw, ScrollText, Archive } from "lucide-react";
+import { Play, Square, RotateCw, ScrollText, Archive, RefreshCw, AlertTriangle, Loader2 } from "lucide-react";
 import { TunnelStatusBadge } from "@/components/TunnelStatusBadge";
 import { ConfirmButton } from "@/components/ConfirmButton";
 import { TrafficChart } from "@/components/TrafficChart";
@@ -23,6 +23,7 @@ interface TunnelData {
   lastRestartAt: string | null;
   sourceServer: ServerRef;
   destServer: ServerRef;
+  lastError: string | null;
 }
 
 interface StatPoint {
@@ -44,6 +45,7 @@ export function TunnelDetailView({ tunnel, stats }: { tunnel: TunnelData; stats:
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [backupMessage, setBackupMessage] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
 
   useEffect(() => {
     const source = new EventSource(`/api/v1/tunnels/${tunnel.id}/stream`);
@@ -70,6 +72,23 @@ export function TunnelDetailView({ tunnel, stats }: { tunnel: TunnelData; stats:
       setActionError("Network error while contacting the panel API");
     } finally {
       setPendingAction(null);
+    }
+  }
+
+  async function retryDeploy() {
+    setRetrying(true);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/v1/tunnels/${tunnel.id}/retry`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setActionError(data.error ?? "Failed to retry deployment");
+        return;
+      }
+      setStatus("DEPLOYING");
+      router.refresh();
+    } finally {
+      setRetrying(false);
     }
   }
 
@@ -105,6 +124,31 @@ export function TunnelDetailView({ tunnel, stats }: { tunnel: TunnelData; stats:
         {tunnel.core} · {tunnel.sourceServer.name} &rarr; {tunnel.destServer.name} · created{" "}
         {new Date(tunnel.createdAt).toLocaleDateString()}
       </p>
+
+      {status === "FAILED" && (
+        <div className="mb-6 flex items-start gap-3 rounded-lg border border-red-900 bg-red-950/50 p-4">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-red-300">Deployment failed</p>
+            <p className="mt-1 text-xs text-red-400/90">{tunnel.lastError ?? "See the Logs tab for detail."}</p>
+          </div>
+          <button
+            onClick={retryDeploy}
+            disabled={retrying}
+            className="flex shrink-0 items-center gap-1.5 rounded border border-red-800 px-3 py-1.5 text-xs font-medium text-red-300 hover:bg-red-900 disabled:opacity-50"
+          >
+            <RefreshCw className="h-3.5 w-3.5" /> {retrying ? "Retrying..." : "Retry"}
+          </button>
+        </div>
+      )}
+
+      {status === "DEPLOYING" && (
+        <div className="mb-6 flex items-center gap-2 rounded-lg border border-blue-900 bg-blue-950/40 px-4 py-3 text-xs text-blue-300">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Deploying -- if this doesn&rsquo;t resolve within a few minutes it will automatically be marked Failed so it can be
+          retried.
+        </div>
+      )}
 
       <div className="mb-6 flex flex-wrap items-center gap-2">
         <ActionButton icon={Play} label="Start" onClick={() => runAction("start")} pending={pendingAction === "start"} />

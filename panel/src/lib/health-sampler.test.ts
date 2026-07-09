@@ -10,18 +10,43 @@ function createFakePrisma() {
   const events: Row[] = [];
   const stats: Row[] = [];
 
+  // Minimal where-clause interpreter: only the specific patterns
+  // health-sampler.ts actually queries with (status notIn/in, updatedAt lt)
+  // -- not a general Prisma emulation.
+  function matchesWhere(row: Row, where: Record<string, unknown> | undefined): boolean {
+    if (!where) return true;
+    if (where.status && typeof where.status === "object") {
+      const statusFilter = where.status as { notIn?: string[]; in?: string[] };
+      if (statusFilter.notIn && statusFilter.notIn.includes(row.status as string)) return false;
+      if (statusFilter.in && !statusFilter.in.includes(row.status as string)) return false;
+    }
+    if (where.updatedAt && typeof where.updatedAt === "object") {
+      const updatedFilter = where.updatedAt as { lt?: Date };
+      const rowUpdatedAt = (row.updatedAt as Date) ?? new Date(0);
+      if (updatedFilter.lt && !(rowUpdatedAt < updatedFilter.lt)) return false;
+    }
+    if (where.tunnelId && row.tunnelId !== where.tunnelId) return false;
+    return true;
+  }
+
   return {
     server: {
       update: vi.fn(async () => ({})),
+      findMany: vi.fn(async () => []),
     },
     tunnel: {
-      findMany: vi.fn(async () => Array.from(tunnels.values())),
+      findMany: vi.fn(async ({ where }: { where?: Record<string, unknown> } = {}) =>
+        Array.from(tunnels.values()).filter((row) => matchesWhere(row, where)),
+      ),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
         const row = tunnels.get(where.id);
         if (!row) throw new Error("not found");
         Object.assign(row, data);
         return row;
       }),
+    },
+    deployment: {
+      findFirst: vi.fn(async () => null),
     },
     tunnelStat: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -84,6 +109,9 @@ beforeEach(() => {
   fakePrisma.__stats.length = 0;
   agentGetMock.mockReset();
   restartTunnelMock.mockReset();
+  fakePrisma.server.update.mockClear();
+  fakePrisma.server.findMany.mockReset();
+  fakePrisma.server.findMany.mockResolvedValue([]);
 });
 
 describe("health-sampler state machine", () => {
@@ -142,5 +170,67 @@ describe("health-sampler state machine", () => {
     await runSampleCycle(); // healthy again
 
     expect(fakePrisma.__tunnels.get("t-recover")!.status).toBe("RUNNING");
+  });
+});
+
+describe("pingAllServers (server reachability independent of tunnels)", () => {
+  it("updates lastSeenAt for every registered server on a successful ping, even with no tunnels", async () => {
+    seedTunnel("t-unrelated"); // any tunnel present shouldn't matter to server pinging
+    agentGetMock.mockResolvedValue(healthyResponse());
+    fakePrisma.server.findMany.mockResolvedValueOnce([
+      { id: "srv-a", host: "1.1.1.1", agentPort: 8443, agentTokenEnc: "tok", tlsFingerprint: "AA" },
+      { id: "srv-b", host: "2.2.2.2", agentPort: 8443, agentTokenEnc: "tok", tlsFingerprint: "BB" },
+    ]);
+
+    await runSampleCycle();
+
+    const updatedIds = fakePrisma.server.update.mock.calls.map((c: [{ where: { id: string } }]) => c[0].where.id);
+    expect(updatedIds).toEqual(expect.arrayContaining(["srv-a", "srv-b"]));
+  });
+
+  it("does not update lastSeenAt for a server whose agent is unreachable", async () => {
+    agentGetMock.mockRejectedValue(new Error("connection refused"));
+    fakePrisma.server.findMany.mockResolvedValueOnce([
+      { id: "srv-c", host: "3.3.3.3", agentPort: 8443, agentTokenEnc: "tok", tlsFingerprint: "CC" },
+    ]);
+
+    await runSampleCycle();
+
+    expect(fakePrisma.server.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("sweepStuckDeployments (defense in depth for the DEPLOYING-forever bug)", () => {
+  it("force-fails a tunnel stuck at DEPLOYING past the timeout with no active deployment", async () => {
+    const staleDate = new Date(Date.now() - 15 * 60 * 1000); // 15 minutes ago
+    fakePrisma.__tunnels.set("t-stuck", {
+      id: "t-stuck",
+      name: "Stuck Tunnel",
+      status: "DEPLOYING",
+      updatedAt: staleDate,
+      sourceServer: serverStub("1.1.1.1"),
+      destServer: serverStub("2.2.2.2"),
+    });
+    agentGetMock.mockResolvedValue(healthyResponse());
+
+    await runSampleCycle();
+
+    expect(fakePrisma.__tunnels.get("t-stuck")!.status).toBe("FAILED");
+    expect(fakePrisma.__events.some((e) => e.type === "TUNNEL_DEPLOY_TIMED_OUT")).toBe(true);
+  });
+
+  it("leaves a recently-started DEPLOYING tunnel alone (not old enough to be considered stuck)", async () => {
+    fakePrisma.__tunnels.set("t-fresh-deploy", {
+      id: "t-fresh-deploy",
+      name: "Fresh Deploy",
+      status: "DEPLOYING",
+      updatedAt: new Date(),
+      sourceServer: serverStub("1.1.1.1"),
+      destServer: serverStub("2.2.2.2"),
+    });
+
+    await runSampleCycle();
+
+    expect(fakePrisma.__tunnels.get("t-fresh-deploy")!.status).toBe("DEPLOYING");
   });
 });

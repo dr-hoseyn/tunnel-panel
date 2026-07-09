@@ -17,6 +17,7 @@ import (
 	"github.com/dr-hoseyn/tunnel-panel/agent/internal/authtoken"
 	"github.com/dr-hoseyn/tunnel-panel/agent/internal/server"
 	"github.com/dr-hoseyn/tunnel-panel/agent/internal/tlscert"
+	"github.com/dr-hoseyn/tunnel-panel/agent/internal/tunnels"
 	"github.com/dr-hoseyn/tunnel-panel/agent/internal/tunnelscript"
 )
 
@@ -58,8 +59,14 @@ func main() {
 		log.Printf("warning: tunnel-manager.sh not found at %s -- /metrics and /tunnels will fail until it's installed there: %v", *scriptPath, err)
 	}
 
+	tunnels.SetDataDir(*dataDir)
+	store, err := tunnels.NewStore(filepath.Join(*dataDir, "tunnels"))
+	if err != nil {
+		log.Fatalf("initializing tunnel store: %v", err)
+	}
+
 	runner := tunnelscript.Runner{ScriptPath: *scriptPath, Timeout: 10 * time.Second}
-	srv := server.New(tokenHash, runner)
+	srv := server.New(tokenHash, tokenPath, runner, store)
 
 	httpServer := &http.Server{
 		Addr:         *listenAddr,

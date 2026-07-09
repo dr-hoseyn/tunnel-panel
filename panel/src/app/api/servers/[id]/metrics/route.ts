@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import { agentGet, AgentError } from "@/lib/agent-client";
+import { decryptSecret } from "@/lib/crypto";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await auth();
@@ -20,7 +21,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       {
         host: server.host,
         port: server.agentPort,
-        token: server.agentToken,
+        token: decryptSecret(server.agentTokenEnc),
         tlsFingerprint: server.tlsFingerprint,
       },
       "/api/v1/metrics",

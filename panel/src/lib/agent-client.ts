@@ -28,15 +28,24 @@ export interface AgentTarget {
   tlsFingerprint: string;
 }
 
-export async function agentGet(target: AgentTarget, path: string): Promise<string> {
+async function agentRequest(
+  target: AgentTarget,
+  method: "GET" | "POST" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<string> {
   return new Promise((resolve, reject) => {
+    const payload = body !== undefined ? JSON.stringify(body) : undefined;
     const req = https.request(
       {
         host: target.host,
         port: target.port,
         path,
-        method: "GET",
-        headers: { Authorization: `Bearer ${target.token}` },
+        method,
+        headers: {
+          Authorization: `Bearer ${target.token}`,
+          ...(payload ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } : {}),
+        },
         rejectUnauthorized: false,
         // Force a fresh TLS handshake every call instead of reusing a
         // pooled keep-alive socket -- checkServerIdentity/getPeerCertificate
@@ -52,16 +61,12 @@ export async function agentGet(target: AgentTarget, path: string): Promise<strin
           }
           return undefined;
         },
-        // Every path this hits (/api/v1/metrics, /api/v1/tunnels) shells
-        // out to tunnel-manager.sh on the agent side, which has its own
-        // 10s timeout (agent/main.go's tunnelscript.Runner) and up to 15s
-        // to write the response (http.Server's WriteTimeout). A client
-        // timeout equal to the agent's own script timeout was a race: on
-        // any server where the script legitimately took close to 10s, the
-        // client gave up right as the agent was about to answer, and the
-        // resulting error ("agent request timed out") looked identical to
-        // a real connectivity problem. 25s comfortably clears both of the
-        // agent's own timeouts with margin.
+        // Every path this hits shells out to tunnel-manager.sh or drives a
+        // tunnel core install/deploy on the agent side, which can take
+        // longer than the read-only endpoints -- 25s comfortably clears the
+        // agent's own internal timeouts (10s script timeout, 15s write
+        // timeout) with margin; deploy-shaped calls (create/start/etc) pass
+        // a longer timeout explicitly via the `timeoutMs` option below.
         timeout: 25_000,
       },
       (res) => {
@@ -82,8 +87,24 @@ export async function agentGet(target: AgentTarget, path: string): Promise<strin
       reject(new AgentError("agent request timed out"));
     });
     req.on("error", (err) => reject(new AgentError(err.message)));
+    if (payload) req.write(payload);
     req.end();
   });
+}
+
+export async function agentGet(target: AgentTarget, path: string): Promise<string> {
+  return agentRequest(target, "GET", path);
+}
+
+/** POSTs a JSON body (or none) to path and returns the raw response text.
+ * Used for every mutating managed-tunnel/admin endpoint (create, start,
+ * stop, restart, token rotate, agent restart). */
+export async function agentPost(target: AgentTarget, path: string, body?: unknown): Promise<string> {
+  return agentRequest(target, "POST", path, body);
+}
+
+export async function agentDelete(target: AgentTarget, path: string): Promise<string> {
+  return agentRequest(target, "DELETE", path);
 }
 
 /** Fetches and pins on trust-on-first-use: no fingerprint check, since this

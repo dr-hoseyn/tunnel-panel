@@ -1,9 +1,12 @@
-// Package server implements the Agent's HTTP API surface. Deliberately a
-// small, fixed set of read-only endpoints for phase 1 — health, metrics,
-// tunnel listing. No generic "run this command" endpoint exists yet: an
-// agent capable of executing arbitrary remote commands is the highest-value
-// attack target in the whole system, and it needs a properly designed
-// command allowlist and audit trail before it ships, not a rushed one.
+// Package server implements the Agent's HTTP API surface. Started as a
+// small, fixed set of read-only endpoints (health, metrics, tunnel
+// listing); now also exposes a deliberately narrow, allowlisted set of
+// mutating endpoints for tunnels *this agent itself created* (see
+// internal/tunnels) -- every field is schema-validated before it ever
+// reaches a driver, every subprocess call uses an argv slice, and there is
+// still no generic "run this command" endpoint. tunnel_handlers.go and
+// admin_handlers.go hold the newer handlers; this file holds the original
+// read-only ones plus the shared plumbing (auth, routing, JSON helpers).
 package server
 
 import (
@@ -11,8 +14,10 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/dr-hoseyn/tunnel-panel/agent/internal/authtoken"
+	"github.com/dr-hoseyn/tunnel-panel/agent/internal/tunnels"
 )
 
 // CommandRunner executes a tunnel-manager.sh JSON mode ("--metrics-json" or
@@ -25,15 +30,32 @@ type CommandRunner interface {
 
 // Server holds the Agent's HTTP handlers and their dependencies.
 type Server struct {
+	tokenMu   sync.RWMutex
 	tokenHash string
+	// tokenPath is where the token hash is persisted -- only needed for
+	// /api/v1/token/rotate to write a new one; empty in tests that don't
+	// exercise rotation.
+	tokenPath string
 	runner    CommandRunner
+	store     *tunnels.Store
+	locks     *tunnels.Locks
 	mux       *http.ServeMux
 }
 
 // New builds a Server. tokenHash is the SHA-256 hex digest of the bearer
 // token every authenticated request must present (see authtoken.Verify).
-func New(tokenHash string, runner CommandRunner) *Server {
-	s := &Server{tokenHash: tokenHash, runner: runner, mux: http.NewServeMux()}
+// tokenPath is where that hash lives on disk, rewritten by token rotation.
+// store persists metadata for agent-native tunnels (see internal/tunnels)
+// across requests -- every operation after creation only ever carries an id.
+func New(tokenHash, tokenPath string, runner CommandRunner, store *tunnels.Store) *Server {
+	s := &Server{
+		tokenHash: tokenHash,
+		tokenPath: tokenPath,
+		runner:    runner,
+		store:     store,
+		locks:     tunnels.NewLocks(),
+		mux:       http.NewServeMux(),
+	}
 	s.routes()
 	return s
 }
@@ -47,6 +69,24 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/health", s.handleHealth)
 	s.mux.Handle("/api/v1/metrics", s.auth(http.HandlerFunc(s.handleMetrics)))
 	s.mux.Handle("/api/v1/tunnels", s.auth(http.HandlerFunc(s.handleTunnels)))
+
+	s.mux.Handle("GET /api/v1/agent/info", s.auth(http.HandlerFunc(s.handleAgentInfo)))
+
+	// Agent-native tunnels this agent creates/manages itself (see
+	// internal/tunnels) -- deliberately namespaced away from
+	// /api/v1/tunnels above, which stays a read-only proxy of whatever
+	// tunnel-manager.sh has configured on this box. Different resources,
+	// different paths.
+	s.mux.Handle("POST /api/v1/managed-tunnels", s.auth(http.HandlerFunc(s.handleCreateTunnel)))
+	s.mux.Handle("POST /api/v1/managed-tunnels/{id}/start", s.auth(http.HandlerFunc(s.handleStartTunnel)))
+	s.mux.Handle("POST /api/v1/managed-tunnels/{id}/stop", s.auth(http.HandlerFunc(s.handleStopTunnel)))
+	s.mux.Handle("POST /api/v1/managed-tunnels/{id}/restart", s.auth(http.HandlerFunc(s.handleRestartTunnel)))
+	s.mux.Handle("DELETE /api/v1/managed-tunnels/{id}", s.auth(http.HandlerFunc(s.handleDeleteTunnel)))
+	s.mux.Handle("GET /api/v1/managed-tunnels/{id}/health", s.auth(http.HandlerFunc(s.handleTunnelHealth)))
+	s.mux.Handle("GET /api/v1/managed-tunnels/{id}/logs", s.auth(http.HandlerFunc(s.handleTunnelLogs)))
+
+	s.mux.Handle("POST /api/v1/token/rotate", s.auth(http.HandlerFunc(s.handleTokenRotate)))
+	s.mux.Handle("POST /api/v1/agent/restart", s.auth(http.HandlerFunc(s.handleAgentRestart)))
 }
 
 // auth wraps a handler so it only runs when the request carries a valid
@@ -60,7 +100,10 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			return
 		}
 		token := strings.TrimPrefix(h, prefix)
-		if !authtoken.Verify(s.tokenHash, token) {
+		s.tokenMu.RLock()
+		hash := s.tokenHash
+		s.tokenMu.RUnlock()
+		if !authtoken.Verify(hash, token) {
 			writeError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}

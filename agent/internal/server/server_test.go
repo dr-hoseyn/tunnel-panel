@@ -5,9 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/dr-hoseyn/tunnel-panel/agent/internal/authtoken"
+	"github.com/dr-hoseyn/tunnel-panel/agent/internal/tunnels"
 )
 
 type fakeRunner struct {
@@ -24,7 +26,30 @@ func (f fakeRunner) Run(mode string) ([]byte, error) {
 
 func newTestServer(runner CommandRunner, token string) (*Server, string) {
 	hash := authtoken.Hash(token)
-	return New(hash, runner), token
+	store, err := tunnels.NewStore(testStoreDir())
+	if err != nil {
+		panic(err)
+	}
+	return New(hash, testTokenPath(), runner, store), token
+}
+
+// testStoreDir/testTokenPath give each test its own throwaway directory
+// under t.TempDir()-equivalent -- os.MkdirTemp here since newTestServer has
+// no *testing.T to call TempDir on.
+func testStoreDir() string {
+	dir, err := os.MkdirTemp("", "tunnel-agent-test-store-*")
+	if err != nil {
+		panic(err)
+	}
+	return dir
+}
+
+func testTokenPath() string {
+	dir, err := os.MkdirTemp("", "tunnel-agent-test-token-*")
+	if err != nil {
+		panic(err)
+	}
+	return dir + "/token.hash"
 }
 
 func TestHealthRequiresNoAuth(t *testing.T) {

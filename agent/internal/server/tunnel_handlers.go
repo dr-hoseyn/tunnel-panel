@@ -62,7 +62,8 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	if err := deployTunnel(ctx, driver); err != nil {
+	tunnels.ResetProgress(spec.ID)
+	if err := deployTunnel(ctx, spec.ID, driver); err != nil {
 		log.Printf("deploying tunnel %s: %v", spec.ID, err)
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -79,10 +80,15 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tunnels.SetStep(spec.ID, "health_check", tunnels.StepRunning, "")
 	health, err := driver.Health(ctx)
 	if err != nil {
 		log.Printf("health check for new tunnel %s: %v", spec.ID, err)
+		tunnels.SetStep(spec.ID, "health_check", tunnels.StepFailed, err.Error())
+	} else {
+		tunnels.SetStep(spec.ID, "health_check", tunnels.StepOK, "")
 	}
+	tunnels.SetStep(spec.ID, "complete", tunnels.StepOK, "")
 	writeJSON(w, http.StatusCreated, health)
 }
 
@@ -92,25 +98,33 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 // the two-server rollback (removing the *other* side too) is the panel
 // orchestrator's job, one layer up; this is this agent's half of that
 // guarantee.
-func deployTunnel(ctx context.Context, driver tunnels.Driver) error {
-	if err := driver.Install(ctx); err != nil {
-		return fmt.Errorf("installing core: %w", err)
+//
+// Each stage's start/end is recorded via tunnels.SetStep so a caller can
+// poll GET /api/v1/managed-tunnels/{id}/progress on a separate connection
+// while this (synchronous, potentially slow -- Install may download a
+// binary) request is still in flight, and see genuine real-time progress
+// instead of a single opaque "pending".
+func deployTunnel(ctx context.Context, id string, driver tunnels.Driver) error {
+	steps := []struct {
+		name string
+		run  func() error
+	}{
+		{"install_binary", func() error { return driver.Install(ctx) }},
+		{"write_config", driver.WriteConfig},
+		{"create_service", driver.CreateService},
+		{"configure_firewall", driver.ConfigureFirewall},
+		{"start_service", func() error { return driver.Start(ctx) }},
 	}
-	if err := driver.WriteConfig(); err != nil {
-		_ = driver.Remove(ctx)
-		return fmt.Errorf("writing config: %w", err)
-	}
-	if err := driver.CreateService(); err != nil {
-		_ = driver.Remove(ctx)
-		return fmt.Errorf("creating service: %w", err)
-	}
-	if err := driver.ConfigureFirewall(); err != nil {
-		_ = driver.Remove(ctx)
-		return fmt.Errorf("configuring firewall: %w", err)
-	}
-	if err := driver.Start(ctx); err != nil {
-		_ = driver.Remove(ctx)
-		return fmt.Errorf("starting service: %w", err)
+	for i, step := range steps {
+		tunnels.SetStep(id, step.name, tunnels.StepRunning, "")
+		if err := step.run(); err != nil {
+			tunnels.SetStep(id, step.name, tunnels.StepFailed, err.Error())
+			if i > 0 { // Install failing leaves nothing on disk yet to remove
+				_ = driver.Remove(ctx)
+			}
+			return fmt.Errorf("%s: %w", step.name, err)
+		}
+		tunnels.SetStep(id, step.name, tunnels.StepOK, "")
 	}
 	return nil
 }
@@ -241,6 +255,24 @@ func (s *Server) handleTunnelLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string][]string{"lines": logLines})
+}
+
+// handleTunnelProgress serves real-time deploy progress for a tunnel id
+// currently being created (or most recently created) -- see
+// internal/tunnels/progress.go. Deliberately has no ValidateTunnelID +
+// store lookup requirement the way other handlers do: a caller may poll
+// this *while* the create POST is still in flight, before
+// s.store.Save has ever run for this id, so there's no persisted Meta to
+// look up yet. An unknown/never-deployed id just returns an empty list, not
+// a 404 -- polling before the create request has reached its first step at
+// all is a normal race, not an error.
+func (s *Server) handleTunnelProgress(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := tunnels.ValidateTunnelID(id); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"steps": tunnels.GetProgress(id)})
 }
 
 func writeDriverLookupError(w http.ResponseWriter, err error) {

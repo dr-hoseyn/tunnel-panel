@@ -93,9 +93,14 @@ vi.mock("@/lib/db", () => ({ prisma: fakePrisma }));
 
 const agentPostMock = vi.fn();
 const agentDeleteMock = vi.fn();
+const agentGetMock = vi.fn();
 vi.mock("@/lib/agent-client", () => ({
   agentPost: (...args: unknown[]) => agentPostMock(...args),
   agentDelete: (...args: unknown[]) => agentDeleteMock(...args),
+  // Only the create-tunnel deploy path polls this (agentPostWithProgress's
+  // real-time progress relay) -- default to "no steps yet" so the polling
+  // loop has nothing to relay and every other test here is unaffected.
+  agentGet: (...args: unknown[]) => agentGetMock(...args),
 }));
 
 const { createTunnel, deleteTunnel, startTunnel, retryTunnelDeploy } = await import("./tunnel-orchestrator");
@@ -119,6 +124,8 @@ beforeEach(() => {
   fakePrisma.__events.length = 0;
   agentPostMock.mockReset();
   agentDeleteMock.mockReset();
+  agentGetMock.mockReset();
+  agentGetMock.mockResolvedValue(JSON.stringify({ steps: [] }));
   seedServer("iran-1", "Iran", "1.1.1.1");
   seedServer("germany-1", "Germany", "2.2.2.2");
 });

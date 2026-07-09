@@ -84,6 +84,7 @@ func (s *Server) routes() {
 	s.mux.Handle("DELETE /api/v1/managed-tunnels/{id}", s.auth(http.HandlerFunc(s.handleDeleteTunnel)))
 	s.mux.Handle("GET /api/v1/managed-tunnels/{id}/health", s.auth(http.HandlerFunc(s.handleTunnelHealth)))
 	s.mux.Handle("GET /api/v1/managed-tunnels/{id}/logs", s.auth(http.HandlerFunc(s.handleTunnelLogs)))
+	s.mux.Handle("GET /api/v1/managed-tunnels/{id}/progress", s.auth(http.HandlerFunc(s.handleTunnelProgress)))
 
 	s.mux.Handle("POST /api/v1/token/rotate", s.auth(http.HandlerFunc(s.handleTokenRotate)))
 	s.mux.Handle("POST /api/v1/agent/restart", s.auth(http.HandlerFunc(s.handleAgentRestart)))

@@ -79,6 +79,61 @@ func TestCreateTunnelHappyPath(t *testing.T) {
 	}
 }
 
+func TestCreateTunnelRecordsRealTimeProgress(t *testing.T) {
+	s, token := newTestServer(fakeRunner{}, "correct-token")
+
+	rec := createTestTunnel(t, s, token, "tunnel-progress")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/managed-tunnels/tunnel-progress/progress", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	progRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(progRec, req)
+	if progRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", progRec.Code, progRec.Body.String())
+	}
+
+	var body struct {
+		Steps []struct {
+			Step   string `json:"step"`
+			Status string `json:"status"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal(progRec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	wantSteps := []string{"install_binary", "write_config", "create_service", "configure_firewall", "start_service", "health_check", "complete"}
+	seen := map[string]bool{}
+	for _, s := range body.Steps {
+		seen[s.Step] = true
+	}
+	for _, want := range wantSteps {
+		if !seen[want] {
+			t.Errorf("expected progress to include step %q, got %+v", want, body.Steps)
+		}
+	}
+	// Every step should have reached "ok" (the fake driver never fails).
+	for _, s := range body.Steps {
+		if s.Status == "failed" {
+			t.Errorf("did not expect any failed step, got %+v", s)
+		}
+	}
+}
+
+func TestTunnelProgressForUnknownIDReturnsEmptyNotError(t *testing.T) {
+	s, token := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/managed-tunnels/never-created/progress", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 (empty progress, not a 404) for an id with no in-flight deploy, got %d", rec.Code)
+	}
+}
+
 func TestCreateTunnelRejectsInvalidSpec(t *testing.T) {
 	s, token := newTestServer(fakeRunner{}, "correct-token")
 	body, _ := json.Marshal(map[string]any{"id": "bad id with spaces", "core": "faketest", "role": "server", "port": 443, "secret": "s"})

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { prisma } from "@/lib/db";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
-import { agentPost, agentDelete, type AgentTarget } from "@/lib/agent-client";
+import { agentPost, agentGet, agentDelete, type AgentTarget } from "@/lib/agent-client";
 import { getCoreDescriptor, type CoreDescriptor } from "@/lib/cores/registry";
 import { DeploymentQueue, type JobContext } from "@/lib/deploy-queue";
 import type { Prisma } from "@/generated/prisma/client";
@@ -181,6 +181,79 @@ async function failDeployment(tunnelId: string, tunnelName: string, reason: stri
   });
 }
 
+/** Human-readable labels for the real stage names the agent reports via
+ * GET /api/v1/managed-tunnels/{id}/progress (see agent/internal/tunnels/
+ * progress.go and deployTunnel in agent/internal/server/tunnel_handlers.go
+ * -- these strings must match the `step` values that code actually emits). */
+const STEP_LABELS: Record<string, string> = {
+  install_binary: "Installing Binary",
+  write_config: "Writing Config",
+  create_service: "Creating Service",
+  configure_firewall: "Opening Firewall",
+  start_service: "Starting Service",
+  health_check: "Checking Health",
+  complete: "Deployment Complete",
+};
+
+interface AgentProgressStep {
+  step: string;
+  status: "running" | "ok" | "failed";
+  message?: string;
+}
+
+/** POSTs a create-tunnel request to one agent while concurrently polling
+ * that same agent's real-time progress endpoint on a separate connection,
+ * relaying each genuine stage transition (install/write-config/create-
+ * service/open-firewall/start/health-check) into ctx.step() as it actually
+ * happens -- not a simulated breakdown of one opaque call. The POST itself
+ * is the source of truth for success/failure; polling is purely for
+ * visibility and any polling error is swallowed (best-effort) rather than
+ * failing the deploy over a missed progress update. */
+async function agentPostWithProgress(
+  target: AgentTarget,
+  path: string,
+  body: unknown,
+  tunnelId: string,
+  sideLabel: string,
+  ctx: JobContext,
+): Promise<string> {
+  const seen = new Set<string>();
+
+  const relayNewSteps = async () => {
+    try {
+      const raw = await agentGet(target, `/api/v1/managed-tunnels/${tunnelId}/progress`);
+      const data = JSON.parse(raw) as { steps: AgentProgressStep[] };
+      for (const s of data.steps) {
+        const key = `${s.step}:${s.status}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const label = `${sideLabel}: ${STEP_LABELS[s.step] ?? s.step}`;
+        const status = s.status === "running" ? "started" : s.status === "ok" ? "ok" : "failed";
+        await ctx.step(label, status, s.message);
+      }
+    } catch {
+      // Best-effort -- a transient poll failure just means one intermediate
+      // update is missed; the outer deploy-or-fail result is unaffected.
+    }
+  };
+
+  let polling = true;
+  const pollLoop = (async () => {
+    while (polling) {
+      await relayNewSteps();
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+  })();
+
+  try {
+    return await agentPost(target, path, body);
+  } finally {
+    polling = false;
+    await pollLoop;
+    await relayNewSteps(); // catch any steps that landed between the last poll and the request resolving
+  }
+}
+
 async function deployBothSides(
   ctx: JobContext,
   tunnelId: string,
@@ -215,17 +288,17 @@ async function deployBothSides(
     // comment for the source=server/destination=client convention) --
     // deploy it first so something is already listening before the
     // destination's client role tries to dial in.
-    await ctx.step(`deploy-source-${source.name}`, "started");
-    await agentPost(
+    await agentPostWithProgress(
       source.target,
       "/api/v1/managed-tunnels",
       buildCreateBody(descriptor, "server", tunnelId, secret, input.port, undefined, input.ports, input.extra),
+      tunnelId,
+      `Source (${source.name})`,
+      ctx,
     );
     sourceDeployed = true;
-    await ctx.step(`deploy-source-${source.name}`, "ok");
 
-    await ctx.step(`deploy-destination-${dest.name}`, "started");
-    await agentPost(
+    await agentPostWithProgress(
       dest.target,
       "/api/v1/managed-tunnels",
       buildCreateBody(
@@ -238,8 +311,10 @@ async function deployBothSides(
         input.ports,
         input.extra,
       ),
+      tunnelId,
+      `Destination (${dest.name})`,
+      ctx,
     );
-    await ctx.step(`deploy-destination-${dest.name}`, "ok");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (sourceDeployed) {

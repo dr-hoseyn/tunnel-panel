@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { auth } from "@/auth";
 import { ServerDetail } from "@/components/ServerDetail";
 import { ServerActions } from "@/components/ServerActions";
+import { AgentCoresTable } from "@/components/AgentCoresTable";
 import { TunnelStatusBadge } from "@/components/TunnelStatusBadge";
 
 export default async function ServerDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -58,6 +59,10 @@ export default async function ServerDetailPage({ params }: { params: Promise<{ i
       />
 
       <ServerDetail id={server.id} />
+
+      <section className="mt-8">
+        <AgentCoresTable id={server.id} />
+      </section>
 
       <section className="mt-8">
         <h2 className="mb-3 text-sm font-medium text-neutral-300">Tunnels on this server</h2>

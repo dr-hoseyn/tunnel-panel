@@ -28,6 +28,12 @@ func TestAgentInfoReturnsSupportedDrivers(t *testing.T) {
 	if info.OS == "" || info.Arch == "" {
 		t.Errorf("expected OS/Arch to be populated, got %+v", info)
 	}
+	if info.GoVersion == "" {
+		t.Errorf("expected GoVersion to be populated, got %+v", info)
+	}
+	if info.UptimeSeconds < 0 {
+		t.Errorf("expected a non-negative uptime, got %d", info.UptimeSeconds)
+	}
 	found := false
 	for _, d := range info.Drivers {
 		if d == "faketest" {
@@ -123,5 +129,102 @@ func TestAgentRestartRespondsBeforeRestarting(t *testing.T) {
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAgentStopRespondsBeforeStopping(t *testing.T) {
+	s, token := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/stop", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if body["status"] != "stopping" {
+		t.Errorf("expected status=stopping, got %v", body)
+	}
+}
+
+func TestAgentStopRequiresAuth(t *testing.T) {
+	s, _ := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/stop", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestAgentLogsRequiresAuth(t *testing.T) {
+	s, _ := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/logs", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestAgentLogsRoutesAndRespondsWithJSON(t *testing.T) {
+	s, token := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/logs?lines=50", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	// journalctl isn't available in this sandboxed test environment (see
+	// backhaul_test.go's header comment on why real subprocess-shelling
+	// code isn't unit tested) -- what matters here is that the route is
+	// wired up and fails cleanly with a JSON error, not a specific
+	// journalctl exit code, which varies by host.
+	if rec.Code != http.StatusOK && rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 200 or 502, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+}
+
+func TestAgentCoresRequiresAuth(t *testing.T) {
+	s, _ := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/cores", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestAgentCoresReportsKnownCores(t *testing.T) {
+	s, token := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/cores", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Cores []tunnels.CoreBinaryReport `json:"cores"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	found := map[string]bool{}
+	for _, c := range body.Cores {
+		found[c.Core] = true
+		if c.Status == "" {
+			t.Errorf("expected a non-empty status for core %q", c.Core)
+		}
+	}
+	for _, want := range []string{"backhaul", "gost", "hysteria2", "rathole"} {
+		if !found[want] {
+			t.Errorf("expected core %q in the response, got %v", want, body.Cores)
+		}
 	}
 }

@@ -71,13 +71,27 @@ func systemctlIPBytes(ctx context.Context, unit string) (rx, tx uint64) {
 	return rx, tx
 }
 
-func journalctlLogs(ctx context.Context, unit string, lines int) ([]string, error) {
+// clampJournalLines keeps a caller-supplied line count sane: 0 or negative
+// means "use a sensible default" rather than "no output", and an unbounded
+// value is capped so a huge/malicious `lines` query param can't turn a log
+// fetch into a multi-thousand-line journal dump.
+func clampJournalLines(lines int) int {
 	if lines <= 0 {
-		lines = 200
+		return 200
 	}
 	if lines > 2000 {
-		lines = 2000
+		return 2000
 	}
+	return lines
+}
+
+// JournalctlLogs runs `journalctl -u <unit> -n <lines> --no-pager` for unit
+// (an argv slice, never a shell string -- see this file's header comment)
+// and splits its stdout into lines. Exported so both the per-tunnel
+// Driver.Logs implementations (see base.go, gost.go) and
+// /api/v1/agent/logs (the agent's own unit) share one implementation.
+func JournalctlLogs(ctx context.Context, unit string, lines int) ([]string, error) {
+	lines = clampJournalLines(lines)
 	out, err := runCommand(ctx, "journalctl", "-u", unit, "-n", strconv.Itoa(lines), "--no-pager", "-o", "short-iso")
 	if err != nil {
 		return nil, err

@@ -55,7 +55,7 @@ func (b baseDriver) Restart(ctx context.Context) error {
 }
 
 func (b baseDriver) Logs(ctx context.Context, lines int) ([]string, error) {
-	return journalctlLogs(ctx, b.serviceName, lines)
+	return JournalctlLogs(ctx, b.serviceName, lines)
 }
 
 // writeUnitAndEnable is the create-service tail every core shares once it

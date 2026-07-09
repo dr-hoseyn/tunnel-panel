@@ -19,9 +19,15 @@ import (
 	"github.com/dr-hoseyn/tunnel-panel/agent/internal/tlscert"
 	"github.com/dr-hoseyn/tunnel-panel/agent/internal/tunnels"
 	"github.com/dr-hoseyn/tunnel-panel/agent/internal/tunnelscript"
+	"github.com/dr-hoseyn/tunnel-panel/agent/internal/version"
 )
 
 func main() {
+	// Captured before anything else (flag parsing, cert/token loading) so
+	// /api/v1/agent/info's uptime reflects this process's real start, not
+	// the moment it got around to opening a listener.
+	version.SetStartTime(time.Now())
+
 	var (
 		listenAddr  = flag.String("listen", ":8443", "HTTPS listen address")
 		dataDir     = flag.String("data-dir", "/etc/tunnel-agent", "directory for the agent's token hash and TLS cert/key")

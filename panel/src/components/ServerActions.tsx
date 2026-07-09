@@ -11,12 +11,47 @@ interface Props {
   isAdmin: boolean;
 }
 
+interface AgentInfo {
+  version: string;
+  commit: string;
+  build_date: string;
+  os: string;
+  arch: string;
+  go_version: string;
+  uptime_seconds: number;
+  supported_drivers: string[];
+}
+
+interface UpdateCheck {
+  currentVersion: string | null;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  checkedAt: string | null;
+  fromCache: boolean;
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const parts: string[] = [];
+  if (days) parts.push(`${days}d`);
+  if (hours) parts.push(`${hours}h`);
+  if (minutes || parts.length === 0) parts.push(`${minutes}m`);
+  return parts.join(" ");
+}
+
 export function ServerActions({ id, name, location, isAdmin }: Props) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  const [agentInfo, setAgentInfo] = useState<AgentInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheck | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [downloadingLogs, setDownloadingLogs] = useState(false);
 
   async function testConnection() {
     setBusy(true);
@@ -26,9 +61,11 @@ export function ServerActions({ id, name, location, isAdmin }: Props) {
       const res = await fetch(`/api/v1/servers/${id}/test-connection`, { method: "POST" });
       const data = await res.json();
       if (data.ok) {
-        setTestResult(`Reachable (${data.latencyMs}ms) -- agent ${data.info.version} on ${data.info.os}/${data.info.arch}`);
+        setAgentInfo(data.info as AgentInfo);
+        setTestResult(`Reachable (${data.latencyMs}ms)`);
         router.refresh();
       } else {
+        setAgentInfo(null);
         setError(data.error ?? "Connection test failed");
       }
     } catch {
@@ -65,6 +102,95 @@ export function ServerActions({ id, name, location, isAdmin }: Props) {
       setTestResult("Agent token rotated.");
     } catch {
       setError("Network error while contacting the panel API");
+    }
+  }
+
+  async function stopAgent() {
+    setError(null);
+    try {
+      const res = await fetch(`/api/v1/servers/${id}/agent-stop`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed to stop the agent");
+        return;
+      }
+      setTestResult("Agent stop requested. It will not come back on its own -- it needs to be started again on the box (or a reboot).");
+    } catch {
+      setError("Network error while contacting the panel API");
+    }
+  }
+
+  async function updateAgent() {
+    setError(null);
+    try {
+      const res = await fetch(`/api/v1/servers/${id}/agent-update`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error ?? "Failed to update the agent");
+        return;
+      }
+      if (data.status === "updated") {
+        setTestResult(`Agent updated: ${data.previous_version ?? "?"} -> ${data.new_version ?? "?"}. Restarting...`);
+        setUpdateCheck(null);
+        router.refresh();
+      } else if (data.status === "already up to date") {
+        setTestResult(`Agent is already up to date (${data.current_version}).`);
+      } else {
+        setTestResult(`Update: ${data.status ?? "requested"}`);
+      }
+    } catch {
+      setError("Network error while contacting the panel API");
+    }
+  }
+
+  async function checkForUpdates() {
+    setCheckingUpdate(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/v1/servers/${id}/check-agent-update`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setError(data.error ?? "Failed to check for updates");
+        return;
+      }
+      setUpdateCheck({
+        currentVersion: data.currentVersion,
+        latestVersion: data.latestVersion,
+        updateAvailable: data.updateAvailable,
+        checkedAt: data.checkedAt,
+        fromCache: data.fromCache,
+      });
+    } catch {
+      setError("Network error while contacting the panel API");
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
+
+  async function downloadLogs() {
+    setDownloadingLogs(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/v1/servers/${id}/agent-logs?lines=1000`);
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setError(data.error ?? "Failed to fetch agent logs");
+        return;
+      }
+      const lines: string[] = data.lines ?? [];
+      const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${name.replace(/[^a-z0-9-_]+/gi, "_")}-agent-logs.txt`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Network error while contacting the panel API");
+    } finally {
+      setDownloadingLogs(false);
     }
   }
 
@@ -149,6 +275,20 @@ export function ServerActions({ id, name, location, isAdmin }: Props) {
         >
           Edit
         </button>
+        <button
+          onClick={downloadLogs}
+          disabled={downloadingLogs}
+          className="rounded border border-neutral-700 px-3 py-1.5 text-xs font-medium text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+        >
+          {downloadingLogs ? "Downloading..." : "Download agent logs"}
+        </button>
+        <button
+          onClick={checkForUpdates}
+          disabled={checkingUpdate}
+          className="rounded border border-neutral-700 px-3 py-1.5 text-xs font-medium text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+        >
+          {checkingUpdate ? "Checking..." : "Check for updates"}
+        </button>
         {isAdmin && (
           <>
             <ConfirmButton
@@ -157,6 +297,20 @@ export function ServerActions({ id, name, location, isAdmin }: Props) {
               confirmLabel="Restart"
               pendingLabel="Restarting..."
               variant="default"
+            />
+            <ConfirmButton
+              onConfirm={stopAgent}
+              label="Stop agent"
+              confirmLabel="Stop (won't self-restart)"
+              pendingLabel="Stopping..."
+              variant="danger"
+            />
+            <ConfirmButton
+              onConfirm={updateAgent}
+              label={updateCheck?.updateAvailable ? `Update agent (${updateCheck.latestVersion} available)` : "Update agent"}
+              confirmLabel="Download & install"
+              pendingLabel="Updating..."
+              variant={updateCheck?.updateAvailable ? "danger" : "default"}
             />
             <ConfirmButton
               onConfirm={rotateToken}
@@ -169,6 +323,51 @@ export function ServerActions({ id, name, location, isAdmin }: Props) {
         )}
         <ConfirmButton onConfirm={removeServer} label="Remove" confirmLabel="Delete server" pendingLabel="Removing..." />
       </div>
+
+      {updateCheck && (
+        <p className="text-xs text-neutral-500">
+          {updateCheck.updateAvailable
+            ? `Update available: ${updateCheck.currentVersion ?? "unknown"} -> ${updateCheck.latestVersion}`
+            : `Up to date (${updateCheck.currentVersion ?? "unknown"}).`}{" "}
+          {updateCheck.fromCache && "(cached result)"}
+        </p>
+      )}
+
+      {agentInfo && (
+        <div className="grid grid-cols-2 gap-x-6 gap-y-1 rounded-lg border border-neutral-800 bg-neutral-900 p-3 text-xs text-neutral-400 sm:grid-cols-4">
+          <div>
+            <div className="text-neutral-500">Version</div>
+            <div className="text-neutral-200">{agentInfo.version}</div>
+          </div>
+          <div>
+            <div className="text-neutral-500">Commit</div>
+            <div className="text-neutral-200">{agentInfo.commit}</div>
+          </div>
+          <div>
+            <div className="text-neutral-500">Build date</div>
+            <div className="text-neutral-200">{agentInfo.build_date}</div>
+          </div>
+          <div>
+            <div className="text-neutral-500">OS / Arch</div>
+            <div className="text-neutral-200">
+              {agentInfo.os}/{agentInfo.arch}
+            </div>
+          </div>
+          <div>
+            <div className="text-neutral-500">Go version</div>
+            <div className="text-neutral-200">{agentInfo.go_version}</div>
+          </div>
+          <div>
+            <div className="text-neutral-500">Uptime</div>
+            <div className="text-neutral-200">{formatUptime(agentInfo.uptime_seconds)}</div>
+          </div>
+          <div className="col-span-2 sm:col-span-2">
+            <div className="text-neutral-500">Supported drivers</div>
+            <div className="text-neutral-200">{agentInfo.supported_drivers.join(", ") || "none"}</div>
+          </div>
+        </div>
+      )}
+
       {testResult && <p className="text-xs text-green-400">{testResult}</p>}
       {error && <p className="text-xs text-red-400">{error}</p>}
     </div>

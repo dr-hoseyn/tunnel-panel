@@ -353,7 +353,7 @@ func (d *gostDriver) Health(ctx context.Context) (Health, error) {
 func (d *gostDriver) Logs(ctx context.Context, lines int) ([]string, error) {
 	// Necessarily every GOST tunnel's log lines interleaved -- there is one
 	// shared process, and therefore one shared journal stream.
-	return journalctlLogs(ctx, gostServiceName, lines)
+	return JournalctlLogs(ctx, gostServiceName, lines)
 }
 
 func (d *gostDriver) Remove(ctx context.Context) error {

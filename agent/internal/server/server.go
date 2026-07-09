@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 
@@ -40,6 +41,14 @@ type Server struct {
 	store     *tunnels.Store
 	locks     *tunnels.Locks
 	mux       *http.ServeMux
+
+	// fetchLatestRelease/selfExecutable back /api/v1/agent/update (see
+	// agent_update.go). Both default to the real implementation in New,
+	// but are plain struct fields (not exported, no constructor param) so
+	// tests in this package can substitute a fake and never reach the real
+	// GitHub API or touch this test binary's own executable.
+	fetchLatestRelease releaseFetcher
+	selfExecutable     func() (string, error)
 }
 
 // New builds a Server. tokenHash is the SHA-256 hex digest of the bearer
@@ -49,12 +58,14 @@ type Server struct {
 // across requests -- every operation after creation only ever carries an id.
 func New(tokenHash, tokenPath string, runner CommandRunner, store *tunnels.Store) *Server {
 	s := &Server{
-		tokenHash: tokenHash,
-		tokenPath: tokenPath,
-		runner:    runner,
-		store:     store,
-		locks:     tunnels.NewLocks(),
-		mux:       http.NewServeMux(),
+		tokenHash:          tokenHash,
+		tokenPath:          tokenPath,
+		runner:             runner,
+		store:              store,
+		locks:              tunnels.NewLocks(),
+		mux:                http.NewServeMux(),
+		fetchLatestRelease: fetchLatestGitHubRelease,
+		selfExecutable:     os.Executable,
 	}
 	s.routes()
 	return s
@@ -88,6 +99,10 @@ func (s *Server) routes() {
 
 	s.mux.Handle("POST /api/v1/token/rotate", s.auth(http.HandlerFunc(s.handleTokenRotate)))
 	s.mux.Handle("POST /api/v1/agent/restart", s.auth(http.HandlerFunc(s.handleAgentRestart)))
+	s.mux.Handle("POST /api/v1/agent/stop", s.auth(http.HandlerFunc(s.handleAgentStop)))
+	s.mux.Handle("GET /api/v1/agent/logs", s.auth(http.HandlerFunc(s.handleAgentLogs)))
+	s.mux.Handle("GET /api/v1/agent/cores", s.auth(http.HandlerFunc(s.handleAgentCores)))
+	s.mux.Handle("POST /api/v1/agent/update", s.auth(http.HandlerFunc(s.handleAgentUpdate)))
 }
 
 // auth wraps a handler so it only runs when the request carries a valid

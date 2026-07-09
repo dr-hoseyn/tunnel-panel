@@ -61,7 +61,7 @@ export default async function ServerDetailPage({ params }: { params: Promise<{ i
       <ServerDetail id={server.id} />
 
       <section className="mt-8">
-        <AgentCoresTable id={server.id} />
+        <AgentCoresTable id={server.id} isAdmin={session?.user?.role === "ADMIN"} />
       </section>
 
       <section className="mt-8">

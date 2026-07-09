@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,6 +11,15 @@ import (
 	"github.com/dr-hoseyn/tunnel-panel/agent/internal/tunnels"
 	"github.com/dr-hoseyn/tunnel-panel/agent/internal/version"
 )
+
+// coretestAlwaysFails is registered so the reinstall-failure HTTP path can
+// be exercised without a real network download -- reuses fakeDriver (see
+// tunnel_handlers_test.go), same package.
+func init() {
+	tunnels.Register("coretest-always-fails", func(spec tunnels.Spec) (tunnels.Driver, error) {
+		return &fakeDriver{installErr: errors.New("simulated install failure")}, nil
+	})
+}
 
 func TestAgentInfoReturnsSupportedDrivers(t *testing.T) {
 	s, token := newTestServer(fakeRunner{}, "correct-token")
@@ -226,5 +236,152 @@ func TestAgentCoresReportsKnownCores(t *testing.T) {
 		if !found[want] {
 			t.Errorf("expected core %q in the response, got %v", want, body.Cores)
 		}
+	}
+}
+
+func TestCoreVerifyRequiresAuth(t *testing.T) {
+	s, _ := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/cores/backhaul/verify", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestCoreVerifyUnknownCoreReturns400(t *testing.T) {
+	s, token := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/cores/does-not-exist/verify", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCoreVerifyReturnsReportForOneCore(t *testing.T) {
+	dir := t.TempDir()
+	tunnels.SetDataDir(dir)
+	defer tunnels.SetDataDir("/etc/tunnel-agent")
+
+	s, token := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/cores/backhaul/verify", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var report tunnels.CoreBinaryReport
+	if err := json.Unmarshal(rec.Body.Bytes(), &report); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if report.Core != "backhaul" {
+		t.Errorf("expected core %q, got %q", "backhaul", report.Core)
+	}
+	if report.Status != tunnels.StatusNotInstalled {
+		t.Errorf("expected not-installed in a fresh data dir, got %q", report.Status)
+	}
+}
+
+func TestCoreReinstallRequiresAuth(t *testing.T) {
+	s, _ := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/cores/backhaul/reinstall", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestCoreReinstallUnknownCoreReturns400(t *testing.T) {
+	s, token := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/cores/does-not-exist/reinstall", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCoreReinstallHappyPath(t *testing.T) {
+	dir := t.TempDir()
+	tunnels.SetDataDir(dir)
+	defer tunnels.SetDataDir("/etc/tunnel-agent")
+
+	s, token := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/cores/faketest/reinstall", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var report tunnels.CoreBinaryReport
+	if err := json.Unmarshal(rec.Body.Bytes(), &report); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if report.Core != "faketest" {
+		t.Errorf("expected core %q, got %q", "faketest", report.Core)
+	}
+}
+
+func TestCoreReinstallFailurePropagatesAsBadGateway(t *testing.T) {
+	dir := t.TempDir()
+	tunnels.SetDataDir(dir)
+	defer tunnels.SetDataDir("/etc/tunnel-agent")
+
+	s, token := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/cores/coretest-always-fails/reinstall", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCoreRollbackRequiresAuth(t *testing.T) {
+	s, _ := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/cores/backhaul/rollback", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestCoreRollbackUnknownCoreReturns400(t *testing.T) {
+	s, token := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/cores/does-not-exist/rollback", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCoreRollbackWithNoPreviousReturns404(t *testing.T) {
+	dir := t.TempDir()
+	tunnels.SetDataDir(dir)
+	defer tunnels.SetDataDir("/etc/tunnel-agent")
+
+	s, token := newTestServer(fakeRunner{}, "correct-token")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/cores/backhaul/rollback", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when there is nothing to roll back to, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if body["error"] == "" {
+		t.Errorf("expected a non-empty error message, got %v", body)
 	}
 }

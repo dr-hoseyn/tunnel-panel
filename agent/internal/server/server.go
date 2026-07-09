@@ -103,6 +103,14 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/agent/logs", s.auth(http.HandlerFunc(s.handleAgentLogs)))
 	s.mux.Handle("GET /api/v1/agent/cores", s.auth(http.HandlerFunc(s.handleAgentCores)))
 	s.mux.Handle("POST /api/v1/agent/update", s.auth(http.HandlerFunc(s.handleAgentUpdate)))
+
+	// Per-core admin actions (see core_admin.go): verify is read-only and
+	// scoped to one core (cheaper than re-checking every core the way GET
+	// /api/v1/agent/cores does); reinstall/rollback mutate that core's
+	// shared binary on disk.
+	s.mux.Handle("GET /api/v1/agent/cores/{core}/verify", s.auth(http.HandlerFunc(s.handleCoreVerify)))
+	s.mux.Handle("POST /api/v1/agent/cores/{core}/reinstall", s.auth(http.HandlerFunc(s.handleCoreReinstall)))
+	s.mux.Handle("POST /api/v1/agent/cores/{core}/rollback", s.auth(http.HandlerFunc(s.handleCoreRollback)))
 }
 
 // auth wraps a handler so it only runs when the request carries a valid

@@ -43,11 +43,17 @@ var coreBinaryChecks = map[string]struct {
 }
 
 // CoreBinaryReport is one core's installed-binary status, as reported by
-// GET /api/v1/agent/cores.
+// GET /api/v1/agent/cores (every core) and the single-core admin actions in
+// core_admin.go (verify/reinstall/rollback).
 type CoreBinaryReport struct {
 	Core   string           `json:"core"`
 	Path   string           `json:"path"`
 	Status CoreBinaryStatus `json:"status"`
+	// HasPrevious reports whether a "<path>.previous" backup exists for this
+	// core -- see core_admin.go's ReinstallCore/RollbackCore -- so the panel
+	// can disable/hide its Rollback action instead of letting an operator
+	// discover "nothing to roll back to" only after clicking it.
+	HasPrevious bool `json:"has_previous"`
 }
 
 // binaryPathFor resolves where core's binary is expected to live and which
@@ -84,12 +90,29 @@ func CoreBinaryReports(ctx context.Context) []CoreBinaryReport {
 	sort.Strings(cores)
 	reports := make([]CoreBinaryReport, 0, len(cores))
 	for _, core := range cores {
-		path, versionArg := binaryPathFor(core)
-		reports = append(reports, CoreBinaryReport{
-			Core:   core,
-			Path:   path,
-			Status: BinaryStatus(ctx, path, versionArg),
-		})
+		reports = append(reports, reportForCore(ctx, core))
 	}
 	return reports
+}
+
+// previousPathFor is where ReinstallCore/RollbackCore (see core_admin.go)
+// keep the one backup a core's binary gets before being overwritten.
+func previousPathFor(core string) string {
+	path, _ := binaryPathFor(core)
+	return path + ".previous"
+}
+
+// reportForCore builds one core's CoreBinaryReport with a fresh health
+// check and a fresh HasPrevious check -- shared by CoreBinaryReports (every
+// registered core) and the single-core admin actions in core_admin.go,
+// which all want the exact same freshly-checked shape back.
+func reportForCore(ctx context.Context, core string) CoreBinaryReport {
+	path, versionArg := binaryPathFor(core)
+	_, previousErr := os.Stat(previousPathFor(core))
+	return CoreBinaryReport{
+		Core:        core,
+		Path:        path,
+		Status:      BinaryStatus(ctx, path, versionArg),
+		HasPrevious: previousErr == nil,
+	}
 }

@@ -27,7 +27,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       },
       "/api/v1/agent/cores",
     );
-    const parsed = JSON.parse(body) as { cores: { core: string; path: string; status: string }[] };
+    const parsed = JSON.parse(body) as {
+      cores: { core: string; path: string; status: string; has_previous: boolean }[];
+    };
     return NextResponse.json({ ok: true, cores: parsed.cores ?? [] });
   } catch (err) {
     const message = err instanceof AgentError ? err.message : "agent request failed";

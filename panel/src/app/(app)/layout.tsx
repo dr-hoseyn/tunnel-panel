@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { auth, signOut } from "@/auth";
 import { Sidebar } from "@/components/Sidebar";
 import { NotificationBell } from "@/components/NotificationBell";
+import { SearchTrigger } from "@/components/SearchTrigger";
 
 /**
  * Single shared shell (sidebar + header + auth check) for every
@@ -23,6 +24,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <header className="flex items-center justify-between border-b border-neutral-800 px-6 py-4">
           <span className="font-semibold">Tunnel Panel</span>
           <div className="flex items-center gap-4 text-sm text-neutral-400">
+            <SearchTrigger />
             <NotificationBell />
             <span>{session.user?.email}</span>
             <span className="rounded-full border border-neutral-700 px-2 py-0.5 text-xs uppercase tracking-wide text-neutral-400">

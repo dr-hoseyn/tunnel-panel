@@ -103,6 +103,24 @@ function unhealthyResponse() {
   return JSON.stringify({ process: "stopped", port_open: false, traffic_active: false, rx_bytes: 0, tx_bytes: 0 });
 }
 
+function healthyResponseWithRuntimeStats(overrides: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    process: "running",
+    port_open: true,
+    traffic_active: true,
+    rx_bytes: 100,
+    tx_bytes: 50,
+    latency_ms: 12.5,
+    has_latency: true,
+    connections: 3,
+    reconnect_count: 2,
+    cpu_percent: 1.5,
+    ram_percent: 4.2,
+    has_proc_stats: true,
+    ...overrides,
+  });
+}
+
 beforeEach(() => {
   fakePrisma.__tunnels.clear();
   fakePrisma.__events.length = 0;
@@ -159,6 +177,36 @@ describe("health-sampler state machine", () => {
     expect(fakePrisma.__tunnels.get("t-failed")!.status).toBe("FAILED");
     expect(restartTunnelMock).toHaveBeenCalledTimes(1);
     expect(fakePrisma.__events.some((e) => e.type === "TUNNEL_HEALTH_FAILED")).toBe(true);
+  });
+
+  it("aggregates real runtime stats (latency/connections/reconnects/cpu/ram) from both sides into one TunnelStat row", async () => {
+    seedTunnel("t-stats");
+    agentGetMock
+      .mockResolvedValueOnce(healthyResponseWithRuntimeStats({ latency_ms: 10, connections: 2, reconnect_count: 1, cpu_percent: 1, ram_percent: 2 }))
+      .mockResolvedValueOnce(healthyResponseWithRuntimeStats({ latency_ms: 20, connections: 3, reconnect_count: 4, cpu_percent: 3, ram_percent: 6 }));
+
+    await runSampleCycle();
+
+    const stat = fakePrisma.__stats[0];
+    expect(stat.latencyMs).toBe(15); // average of 10 and 20
+    expect(stat.connections).toBe(5); // sum of 2 and 3
+    expect(stat.reconnectCount).toBe(5); // sum of 1 and 4
+    expect(stat.cpuPercent).toBe(2); // average of 1 and 3
+    expect(stat.ramPercent).toBe(4); // average of 2 and 6
+  });
+
+  it("leaves latency/cpu/ram null (not 0) when neither side reports them", async () => {
+    seedTunnel("t-no-runtime-stats");
+    agentGetMock.mockResolvedValue(healthyResponse()); // no latency_ms/cpu_percent/ram_percent fields at all
+
+    await runSampleCycle();
+
+    const stat = fakePrisma.__stats[0];
+    expect(stat.latencyMs).toBeNull();
+    expect(stat.cpuPercent).toBeNull();
+    expect(stat.ramPercent).toBeNull();
+    expect(stat.connections).toBe(0);
+    expect(stat.reconnectCount).toBe(0);
   });
 
   it("recovers back to RUNNING once health checks succeed again", async () => {

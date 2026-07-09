@@ -170,6 +170,11 @@ func (d *backhaulDriver) Health(ctx context.Context) (Health, error) {
 	}
 	h.RxBytes, h.TxBytes = systemctlIPBytes(ctx, d.serviceName)
 	h.Traffic = h.RxBytes > 0 || h.TxBytes > 0
+	tcpPort := 0
+	if d.spec.Role == RoleServer {
+		tcpPort = d.spec.Port
+	}
+	mergeRuntimeStats(&h, runtimeStats(ctx, d.serviceName, tcpPort))
 	switch {
 	case h.Process != "running":
 		h.Detail = "systemd unit is not active"

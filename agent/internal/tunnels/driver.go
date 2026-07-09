@@ -53,13 +53,30 @@ type Spec struct {
 // Health is the result of a real health check: process state, port
 // reachability, and (where the core supports it, via systemd's
 // IPAccounting) a traffic-activity signal -- not just "is the unit active".
+//
+// LatencyMs/Connections/ReconnectCount/CPUPercent/RAMPercent are all real,
+// directly-measured signals (TCP dial timing, /proc/net/tcp, systemd's own
+// NRestarts counter, /proc/<pid> sampling) -- populated by runtimeStats in
+// health.go and merged in by every driver's Health(). There is deliberately
+// no packet-loss field: without either raw-socket ICMP (needs CAP_NET_RAW)
+// or per-core protocol support neither Backhaul/Rathole/GOST/Hysteria2
+// expose, any number here would be fabricated rather than measured -- and
+// this project's own conventions (see progress.go) treat a real "we don't
+// know" as strictly better than a fake percentage.
 type Health struct {
-	Process  string `json:"process"` // "running" | "stopped" | "unknown"
-	PortOpen bool   `json:"port_open"`
-	Traffic  bool   `json:"traffic_active"`
-	RxBytes  uint64 `json:"rx_bytes"`
-	TxBytes  uint64 `json:"tx_bytes"`
-	Detail   string `json:"detail,omitempty"`
+	Process        string  `json:"process"` // "running" | "stopped" | "unknown"
+	PortOpen       bool    `json:"port_open"`
+	Traffic        bool    `json:"traffic_active"`
+	RxBytes        uint64  `json:"rx_bytes"`
+	TxBytes        uint64  `json:"tx_bytes"`
+	LatencyMs      float64 `json:"latency_ms,omitempty"`
+	HasLatency     bool    `json:"has_latency"`
+	Connections    int     `json:"connections"`
+	ReconnectCount uint64  `json:"reconnect_count"`
+	CPUPercent     float64 `json:"cpu_percent,omitempty"`
+	RAMPercent     float64 `json:"ram_percent,omitempty"`
+	HasProcStats   bool    `json:"has_proc_stats"`
+	Detail         string  `json:"detail,omitempty"`
 }
 
 // Driver is the boundary every tunnel core implements. One instance per

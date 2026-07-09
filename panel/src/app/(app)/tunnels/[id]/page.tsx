@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { TunnelDetailView } from "@/components/TunnelDetailView";
+import { computeHealthScore } from "@/lib/health-score";
 
 export default async function TunnelDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -33,6 +34,12 @@ export default async function TunnelDetailPage({ params }: { params: Promise<{ i
     skip: Math.max(0, (await prisma.tunnelStat.count({ where: { tunnelId: id } })) - 200),
   });
 
+  const healthScore = computeHealthScore(
+    tunnel.status,
+    stats.map((s) => ({ timestamp: s.timestamp, latencyMs: s.latencyMs, reconnectCount: s.reconnectCount })),
+  );
+  const latest = stats[stats.length - 1];
+
   return (
     <div>
       <Link href="/tunnels" className="mb-4 inline-block text-sm text-neutral-400 hover:text-neutral-100">
@@ -58,6 +65,10 @@ export default async function TunnelDetailPage({ params }: { params: Promise<{ i
           latencyMs: s.latencyMs,
           connections: s.connections,
         }))}
+        healthScore={healthScore}
+        reconnectCount={latest?.reconnectCount ?? 0}
+        cpuPercent={latest?.cpuPercent ?? null}
+        ramPercent={latest?.ramPercent ?? null}
       />
     </div>
   );

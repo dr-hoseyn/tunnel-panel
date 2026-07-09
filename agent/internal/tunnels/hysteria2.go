@@ -177,6 +177,10 @@ func (d *hysteria2Driver) Health(ctx context.Context) (Health, error) {
 	}
 	h.RxBytes, h.TxBytes = systemctlIPBytes(ctx, d.serviceName)
 	h.Traffic = h.RxBytes > 0 || h.TxBytes > 0
+	// UDP has no TCP handshake to dial/count, so latency/connections stay
+	// unset here (tcpPort=0) -- reconnects and CPU/RAM are still real and
+	// protocol-independent.
+	mergeRuntimeStats(&h, runtimeStats(ctx, d.serviceName, 0))
 	switch {
 	case h.Process != "running":
 		h.Detail = "systemd unit is not active"

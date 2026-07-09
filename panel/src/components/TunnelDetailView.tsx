@@ -34,10 +34,38 @@ interface StatPoint {
   connections: number | null;
 }
 
+interface HealthScore {
+  score: number;
+  label: string;
+  reasons: string[];
+}
+
 const TABS = ["Overview", "Performance", "Logs"] as const;
 type Tab = (typeof TABS)[number];
 
-export function TunnelDetailView({ tunnel, stats }: { tunnel: TunnelData; stats: StatPoint[] }) {
+const HEALTH_LABEL_COLOR: Record<string, string> = {
+  Excellent: "text-green-400 border-green-900 bg-green-950/40",
+  Good: "text-green-400 border-green-900 bg-green-950/40",
+  Degraded: "text-amber-400 border-amber-900 bg-amber-950/40",
+  Poor: "text-red-400 border-red-900 bg-red-950/40",
+  Unknown: "text-neutral-400 border-neutral-700 bg-neutral-900/40",
+};
+
+export function TunnelDetailView({
+  tunnel,
+  stats,
+  healthScore,
+  reconnectCount,
+  cpuPercent,
+  ramPercent,
+}: {
+  tunnel: TunnelData;
+  stats: StatPoint[];
+  healthScore?: HealthScore;
+  reconnectCount?: number;
+  cpuPercent?: number | null;
+  ramPercent?: number | null;
+}) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("Overview");
   const [status, setStatus] = useState(tunnel.status);
@@ -127,6 +155,14 @@ export function TunnelDetailView({ tunnel, stats }: { tunnel: TunnelData; stats:
       <div className="mb-1 flex items-center gap-3">
         <h1 className="text-lg font-semibold">{tunnel.name}</h1>
         <TunnelStatusBadge status={status} />
+        {healthScore && (
+          <span
+            title={healthScore.reasons.join("; ") || "No issues detected"}
+            className={`rounded-full border px-2 py-0.5 text-xs font-medium ${HEALTH_LABEL_COLOR[healthScore.label] ?? HEALTH_LABEL_COLOR.Unknown}`}
+          >
+            Health {healthScore.score} · {healthScore.label}
+          </span>
+        )}
       </div>
       <p className="mb-6 text-sm text-neutral-500">
         {tunnel.core} · {tunnel.sourceServer.name} &rarr; {tunnel.destServer.name} · created{" "}
@@ -217,8 +253,14 @@ export function TunnelDetailView({ tunnel, stats }: { tunnel: TunnelData; stats:
             <div className="mt-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
               <Info label="Latest RX" value={formatBytes(stats[stats.length - 1].rxBytes)} />
               <Info label="Latest TX" value={formatBytes(stats[stats.length - 1].txBytes)} />
-              <Info label="Latency" value={stats[stats.length - 1].latencyMs ? `${stats[stats.length - 1].latencyMs}ms` : "—"} />
+              <Info
+                label="Latency"
+                value={stats[stats.length - 1].latencyMs ? `${Math.round(stats[stats.length - 1].latencyMs!)}ms` : "—"}
+              />
               <Info label="Connections" value={stats[stats.length - 1].connections?.toString() ?? "—"} />
+              <Info label="Reconnects (lifetime)" value={reconnectCount?.toString() ?? "—"} />
+              <Info label="CPU" value={cpuPercent != null ? `${cpuPercent.toFixed(1)}%` : "—"} />
+              <Info label="RAM" value={ramPercent != null ? `${ramPercent.toFixed(1)}%` : "—"} />
             </div>
           )}
         </div>

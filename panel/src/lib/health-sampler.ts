@@ -24,6 +24,13 @@ interface AgentHealth {
   traffic_active: boolean;
   rx_bytes: number;
   tx_bytes: number;
+  latency_ms?: number;
+  has_latency?: boolean;
+  connections?: number;
+  reconnect_count?: number;
+  cpu_percent?: number;
+  ram_percent?: number;
+  has_proc_stats?: boolean;
   detail?: string;
 }
 
@@ -163,6 +170,28 @@ function isSideHealthy(h: AgentHealth | null): boolean {
   return h !== null && h.process === "running";
 }
 
+/** Combines both sides' real, agent-measured signals into the single
+ * TunnelStat row recorded per sample. Latency/CPU/RAM are averaged across
+ * whichever side(s) actually reported a value (a tunnel with an
+ * unreachable side shouldn't silently show 0ms latency); connections and
+ * reconnect count are summed, since they're genuinely two independent
+ * processes' counters. Never fabricates a number for a side with no data --
+ * an all-null pair of sides yields null, not 0. */
+function aggregateHealthStats(sourceHealth: AgentHealth | null, destHealth: AgentHealth | null) {
+  const latencies = [sourceHealth, destHealth]
+    .filter((h): h is AgentHealth => !!h?.has_latency)
+    .map((h) => h.latency_ms!);
+  const procStats = [sourceHealth, destHealth].filter((h): h is AgentHealth => !!h?.has_proc_stats);
+
+  return {
+    latencyMs: latencies.length > 0 ? latencies.reduce((a, b) => a + b, 0) / latencies.length : null,
+    connections: (sourceHealth?.connections ?? 0) + (destHealth?.connections ?? 0),
+    reconnectCount: (sourceHealth?.reconnect_count ?? 0) + (destHealth?.reconnect_count ?? 0),
+    cpuPercent: procStats.length > 0 ? procStats.reduce((a, h) => a + (h.cpu_percent ?? 0), 0) / procStats.length : null,
+    ramPercent: procStats.length > 0 ? procStats.reduce((a, h) => a + (h.ram_percent ?? 0), 0) / procStats.length : null,
+  };
+}
+
 type TunnelWithServers = Awaited<ReturnType<typeof prisma.tunnel.findMany>>[number] & {
   sourceServer: { host: string; agentPort: number; agentTokenEnc: string; tlsFingerprint: string };
   destServer: { host: string; agentPort: number; agentTokenEnc: string; tlsFingerprint: string };
@@ -174,11 +203,17 @@ async function sampleTunnel(tunnel: TunnelWithServers): Promise<void> {
     fetchHealth(tunnel.destServer, tunnel.id),
   ]);
 
+  const agg = aggregateHealthStats(sourceHealth, destHealth);
   await prisma.tunnelStat.create({
     data: {
       tunnelId: tunnel.id,
       rxBytes: BigInt(Math.max(0, Math.round((sourceHealth?.rx_bytes ?? 0) + (destHealth?.rx_bytes ?? 0)))),
       txBytes: BigInt(Math.max(0, Math.round((sourceHealth?.tx_bytes ?? 0) + (destHealth?.tx_bytes ?? 0)))),
+      latencyMs: agg.latencyMs,
+      connections: agg.connections,
+      reconnectCount: agg.reconnectCount,
+      cpuPercent: agg.cpuPercent,
+      ramPercent: agg.ramPercent,
     },
   });
 

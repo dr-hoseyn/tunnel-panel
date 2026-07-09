@@ -326,8 +326,9 @@ func (d *gostDriver) Health(ctx context.Context) (Health, error) {
 		h.Process = "running"
 	}
 	mappings := d.portMappings()
+	checkPort := 0
 	if len(mappings) > 0 {
-		checkPort := mappings[0].Remote
+		checkPort = mappings[0].Remote
 		if d.spec.Role == RoleClient {
 			checkPort = mappings[0].Local
 		}
@@ -335,6 +336,9 @@ func (d *gostDriver) Health(ctx context.Context) (Health, error) {
 	}
 	h.RxBytes, h.TxBytes = systemctlIPBytes(ctx, gostServiceName)
 	h.Traffic = h.RxBytes > 0 || h.TxBytes > 0
+	// NRestarts/CPU/RAM below are for the shared gost.service, same caveat
+	// as the traffic figures -- not this tunnel alone.
+	mergeRuntimeStats(&h, runtimeStats(ctx, gostServiceName, checkPort))
 	switch {
 	case h.Process != "running":
 		h.Detail = "the shared gost.service is not active (affects every GOST tunnel on this agent, not just this one)"

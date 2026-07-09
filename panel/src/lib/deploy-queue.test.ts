@@ -73,6 +73,7 @@ vi.mock("@/lib/settings", () => ({
     deploymentMaxAttempts: 3,
     autoRestartEnabled: true,
     logRetentionDays: 30,
+    backupScheduleHours: 0,
   }),
 }));
 

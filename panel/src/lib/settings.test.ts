@@ -8,6 +8,7 @@ interface Row {
   deploymentMaxAttempts: number;
   autoRestartEnabled: boolean;
   logRetentionDays: number;
+  backupScheduleHours: number;
 }
 
 let row: Row | null = null;
@@ -41,6 +42,7 @@ describe("getSettings", () => {
     expect(settings.healthCheckIntervalMs).toBe(15000);
     expect(settings.autoRestartEnabled).toBe(true);
     expect(settings.statRetentionMs).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(settings.backupScheduleHours).toBe(0);
   });
 
   it("caches the result -- a second call within the TTL does not hit the DB again", async () => {
@@ -71,5 +73,10 @@ describe("updateSettings", () => {
     const settings = await getSettings();
     expect(settings.statRetentionMs).toBe(1000);
     expect(typeof settings.statRetentionMs).toBe("number");
+  });
+
+  it("updates backupScheduleHours", async () => {
+    const updated = await updateSettings({ backupScheduleHours: 24 });
+    expect(updated.backupScheduleHours).toBe(24);
   });
 });

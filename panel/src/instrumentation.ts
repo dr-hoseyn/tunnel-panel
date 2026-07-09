@@ -14,4 +14,6 @@ export async function register() {
   startHealthSampler();
   const { startNotificationSampler } = await import("@/lib/notification-sampler");
   startNotificationSampler();
+  const { startBackupScheduler } = await import("@/lib/backup-scheduler");
+  startBackupScheduler();
 }

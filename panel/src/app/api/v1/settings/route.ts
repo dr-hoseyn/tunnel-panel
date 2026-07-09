@@ -20,6 +20,7 @@ const patchSchema = z
     deploymentMaxAttempts: z.number().int().min(1).max(10),
     autoRestartEnabled: z.boolean(),
     logRetentionDays: z.number().int().min(1).max(365),
+    backupScheduleHours: z.number().int().min(0).max(24 * 30),
   })
   .partial();
 

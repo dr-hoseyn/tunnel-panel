@@ -17,6 +17,7 @@ function defaults(): SettingsRow {
     deploymentMaxAttempts: 3,
     autoRestartEnabled: true,
     logRetentionDays: 30,
+    backupScheduleHours: 0,
   };
 }
 
@@ -103,5 +104,19 @@ describe("PATCH /api/v1/settings", () => {
     const eventData = eventCreateMock.mock.calls[0][0].data;
     expect(eventData.type).toBe("SETTINGS_UPDATED");
     expect(eventData.category).toBe("AUDIT");
+  });
+
+  it("updates backupScheduleHours", async () => {
+    authMock.mockResolvedValue(sessionWithRole("ADMIN"));
+    const res = await PATCH(patchRequest({ backupScheduleHours: 24 }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.settings.backupScheduleHours).toBe(24);
+  });
+
+  it("rejects a negative backupScheduleHours", async () => {
+    authMock.mockResolvedValue(sessionWithRole("ADMIN"));
+    const res = await PATCH(patchRequest({ backupScheduleHours: -1 }));
+    expect(res.status).toBe(400);
   });
 });

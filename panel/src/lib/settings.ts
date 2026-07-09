@@ -20,6 +20,7 @@ export interface AppSettingsValue {
   deploymentMaxAttempts: number;
   autoRestartEnabled: boolean;
   logRetentionDays: number;
+  backupScheduleHours: number;
 }
 
 const SINGLETON_ID = "singleton";
@@ -31,6 +32,7 @@ const DEFAULTS: AppSettingsValue = {
   deploymentMaxAttempts: 3,
   autoRestartEnabled: true,
   logRetentionDays: 30,
+  backupScheduleHours: 0,
 };
 
 const CACHE_TTL_MS = 5_000;
@@ -54,6 +56,7 @@ export async function getSettings(): Promise<AppSettingsValue> {
       deploymentMaxAttempts: DEFAULTS.deploymentMaxAttempts,
       autoRestartEnabled: DEFAULTS.autoRestartEnabled,
       logRetentionDays: DEFAULTS.logRetentionDays,
+      backupScheduleHours: DEFAULTS.backupScheduleHours,
     },
   });
   const value: AppSettingsValue = {
@@ -63,6 +66,7 @@ export async function getSettings(): Promise<AppSettingsValue> {
     deploymentMaxAttempts: row.deploymentMaxAttempts,
     autoRestartEnabled: row.autoRestartEnabled,
     logRetentionDays: row.logRetentionDays,
+    backupScheduleHours: row.backupScheduleHours,
   };
   cached = { value, expiresAt: Date.now() + CACHE_TTL_MS };
   return value;
@@ -79,6 +83,7 @@ export async function updateSettings(patch: Partial<AppSettingsValue>): Promise<
   if (patch.deploymentMaxAttempts !== undefined) data.deploymentMaxAttempts = patch.deploymentMaxAttempts;
   if (patch.autoRestartEnabled !== undefined) data.autoRestartEnabled = patch.autoRestartEnabled;
   if (patch.logRetentionDays !== undefined) data.logRetentionDays = patch.logRetentionDays;
+  if (patch.backupScheduleHours !== undefined) data.backupScheduleHours = patch.backupScheduleHours;
 
   await prisma.appSettings.upsert({
     where: { id: SINGLETON_ID },

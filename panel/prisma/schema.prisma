@@ -271,5 +271,9 @@ model AppSettings {
   deploymentMaxAttempts    Int      @default(3)
   autoRestartEnabled       Boolean  @default(true)
   logRetentionDays         Int      @default(30)
+  // Hours between automatic backups per tunnel; 0 disables scheduled
+  // backups entirely (manual "Backup" button on the tunnel detail page
+  // still works either way). See src/lib/backup-scheduler.ts.
+  backupScheduleHours      Int      @default(0)
   updatedAt                DateTime @updatedAt
 }

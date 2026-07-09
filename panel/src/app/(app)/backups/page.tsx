@@ -44,7 +44,15 @@ export default async function BackupsPage() {
                   <td className="px-4 py-2 text-neutral-500">{b.createdAt.toLocaleString()}</td>
                   <td className="px-4 py-2 text-neutral-500">{b.note ?? "—"}</td>
                   <td className="px-4 py-2">
-                    <RestoreBackupButton id={b.id} />
+                    <div className="flex items-center gap-3">
+                      <RestoreBackupButton id={b.id} />
+                      <a
+                        href={`/api/v1/backups/${b.id}/download`}
+                        className="text-xs text-neutral-400 hover:text-neutral-100 hover:underline"
+                      >
+                        Download
+                      </a>
+                    </div>
                   </td>
                 </tr>
               ))}

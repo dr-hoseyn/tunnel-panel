@@ -9,6 +9,7 @@ interface SettingsValue {
   deploymentMaxAttempts: number;
   autoRestartEnabled: boolean;
   logRetentionDays: number;
+  backupScheduleHours: number;
 }
 
 /** Operational knobs stored in ms/days on the backend, edited here in
@@ -84,6 +85,14 @@ export function SystemSettingsForm({ initial }: { initial: SettingsValue }) {
         min={1}
         max={365}
         onChange={(v) => setValues({ ...values, logRetentionDays: v })}
+      />
+      <NumberField
+        label="Scheduled backups"
+        suffix="hours between backups (0 = disabled)"
+        value={values.backupScheduleHours}
+        min={0}
+        max={720}
+        onChange={(v) => setValues({ ...values, backupScheduleHours: v })}
       />
       <label className="flex items-center gap-2 text-sm text-neutral-300">
         <input

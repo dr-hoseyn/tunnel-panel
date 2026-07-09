@@ -85,6 +85,7 @@ let currentSettings = {
   deploymentMaxAttempts: 3,
   autoRestartEnabled: true,
   logRetentionDays: 30,
+    backupScheduleHours: 0,
 };
 vi.mock("@/lib/settings", () => ({ getSettings: () => Promise.resolve(currentSettings) }));
 
@@ -158,6 +159,7 @@ beforeEach(() => {
     deploymentMaxAttempts: 3,
     autoRestartEnabled: true,
     logRetentionDays: 30,
+    backupScheduleHours: 0,
   };
 });
 

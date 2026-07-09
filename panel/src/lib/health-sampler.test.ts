@@ -58,6 +58,7 @@ function createFakePrisma() {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         events.push({ id: `event-${events.length}`, ...data });
       }),
+      deleteMany: vi.fn(async () => ({ count: 0 })),
     },
     __tunnels: tunnels,
     __events: events,
@@ -76,7 +77,17 @@ vi.mock("@/lib/crypto", () => ({ decryptSecret: (v: string) => v }));
 const restartTunnelMock = vi.fn();
 vi.mock("@/lib/tunnel-orchestrator", () => ({ restartTunnel: (...args: unknown[]) => restartTunnelMock(...args) }));
 
-const { runSampleCycle } = await import("./health-sampler");
+let currentSettings = {
+  healthCheckIntervalMs: 15000,
+  statRetentionMs: 7 * 24 * 60 * 60 * 1000,
+  stuckDeploymentTimeoutMs: 10 * 60 * 1000,
+  deploymentMaxAttempts: 3,
+  autoRestartEnabled: true,
+  logRetentionDays: 30,
+};
+vi.mock("@/lib/settings", () => ({ getSettings: () => Promise.resolve(currentSettings) }));
+
+const { runSampleCycle, __resetHealthSamplerStateForTests } = await import("./health-sampler");
 
 const serverStub = (host: string) => ({
   host,
@@ -130,6 +141,17 @@ beforeEach(() => {
   fakePrisma.server.update.mockClear();
   fakePrisma.server.findMany.mockReset();
   fakePrisma.server.findMany.mockResolvedValue([]);
+  fakePrisma.tunnelStat.deleteMany.mockClear();
+  fakePrisma.event.deleteMany.mockClear();
+  __resetHealthSamplerStateForTests();
+  currentSettings = {
+    healthCheckIntervalMs: 15000,
+    statRetentionMs: 7 * 24 * 60 * 60 * 1000,
+    stuckDeploymentTimeoutMs: 10 * 60 * 1000,
+    deploymentMaxAttempts: 3,
+    autoRestartEnabled: true,
+    logRetentionDays: 30,
+  };
 });
 
 describe("health-sampler state machine", () => {
@@ -177,6 +199,34 @@ describe("health-sampler state machine", () => {
     expect(fakePrisma.__tunnels.get("t-failed")!.status).toBe("FAILED");
     expect(restartTunnelMock).toHaveBeenCalledTimes(1);
     expect(fakePrisma.__events.some((e) => e.type === "TUNNEL_HEALTH_FAILED")).toBe(true);
+  });
+
+  it("never auto-restarts when settings.autoRestartEnabled is false, and still reaches FAILED", async () => {
+    currentSettings.autoRestartEnabled = false;
+    seedTunnel("t-no-auto-restart");
+    agentGetMock.mockResolvedValue(unhealthyResponse());
+
+    await runSampleCycle(); // 1 -> WARNING
+    await runSampleCycle(); // 2 -> would restart if enabled, but it's not
+
+    expect(restartTunnelMock).not.toHaveBeenCalled();
+    expect(fakePrisma.__tunnels.get("t-no-auto-restart")!.status).toBe("FAILED");
+    const failedEvent = fakePrisma.__events.find((e) => e.type === "TUNNEL_HEALTH_FAILED");
+    expect(failedEvent).toBeTruthy();
+    expect(failedEvent!.message).toContain("disabled");
+  });
+
+  it("logs the FAILED event exactly once per failure streak, not every cycle it stays FAILED", async () => {
+    seedTunnel("t-log-once");
+    agentGetMock.mockResolvedValue(unhealthyResponse());
+
+    await runSampleCycle(); // 1 -> WARNING
+    await runSampleCycle(); // 2 -> restart attempted
+    await runSampleCycle(); // 3 -> FAILED, logged
+    await runSampleCycle(); // 4 -> still FAILED, must not log again
+
+    const failedEvents = fakePrisma.__events.filter((e) => e.type === "TUNNEL_HEALTH_FAILED");
+    expect(failedEvents).toHaveLength(1);
   });
 
   it("aggregates real runtime stats (latency/connections/reconnects/cpu/ram) from both sides into one TunnelStat row", async () => {
@@ -280,5 +330,39 @@ describe("sweepStuckDeployments (defense in depth for the DEPLOYING-forever bug)
     await runSampleCycle();
 
     expect(fakePrisma.__tunnels.get("t-fresh-deploy")!.status).toBe("DEPLOYING");
+  });
+
+  it("honors a shorter settings.stuckDeploymentTimeoutMs -- a tunnel too fresh for the default timeout can still be swept", async () => {
+    currentSettings.stuckDeploymentTimeoutMs = 60 * 1000; // 1 minute, instead of the 10-minute default
+    fakePrisma.__tunnels.set("t-short-timeout", {
+      id: "t-short-timeout",
+      name: "Short Timeout",
+      status: "DEPLOYING",
+      updatedAt: new Date(Date.now() - 2 * 60 * 1000), // 2 minutes ago
+      sourceServer: serverStub("1.1.1.1"),
+      destServer: serverStub("2.2.2.2"),
+    });
+
+    await runSampleCycle();
+
+    expect(fakePrisma.__tunnels.get("t-short-timeout")!.status).toBe("FAILED");
+  });
+});
+
+describe("stat/log retention (every 20th cycle)", () => {
+  it("prunes old TunnelStat and Event rows using settings.statRetentionMs/logRetentionDays", async () => {
+    for (let i = 0; i < 20; i++) {
+      await runSampleCycle();
+    }
+    expect(fakePrisma.tunnelStat.deleteMany).toHaveBeenCalledTimes(1);
+    expect(fakePrisma.event.deleteMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not prune before the 20th cycle", async () => {
+    for (let i = 0; i < 19; i++) {
+      await runSampleCycle();
+    }
+    expect(fakePrisma.tunnelStat.deleteMany).not.toHaveBeenCalled();
+    expect(fakePrisma.event.deleteMany).not.toHaveBeenCalled();
   });
 });

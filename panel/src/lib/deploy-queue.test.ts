@@ -62,6 +62,20 @@ function createFakePrisma() {
 const fakePrisma = createFakePrisma();
 vi.mock("@/lib/db", () => ({ prisma: fakePrisma }));
 
+// enqueue() falls back to settings.deploymentMaxAttempts when no explicit
+// maxAttempts is passed -- most tests below pass one explicitly, but the
+// module still needs a working @/lib/settings to import cleanly.
+vi.mock("@/lib/settings", () => ({
+  getSettings: async () => ({
+    healthCheckIntervalMs: 15000,
+    statRetentionMs: 0,
+    stuckDeploymentTimeoutMs: 0,
+    deploymentMaxAttempts: 3,
+    autoRestartEnabled: true,
+    logRetentionDays: 30,
+  }),
+}));
+
 const { DeploymentQueue } = await import("./deploy-queue");
 
 beforeEach(() => {
@@ -93,6 +107,16 @@ describe("DeploymentQueue", () => {
     await flushQueue();
     expect(fakePrisma.__rows.get(id)!.status).toBe("SUCCEEDED");
     expect(fakePrisma.__rows.get(id)!.steps).toHaveLength(2);
+  });
+
+  it("defaults maxAttempts from settings.deploymentMaxAttempts when none is passed explicitly", async () => {
+    const id = await DeploymentQueue.enqueue({
+      tunnelId: "t1b",
+      kind: "START" as never,
+      handler: async () => {},
+    });
+    await flushQueue();
+    expect(fakePrisma.__rows.get(id)!.maxAttempts).toBe(3); // from the @/lib/settings mock above
   });
 
   it("retries a retryable failure and eventually succeeds", async () => {

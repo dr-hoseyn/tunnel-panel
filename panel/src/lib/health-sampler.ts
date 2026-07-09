@@ -2,21 +2,21 @@ import { prisma } from "@/lib/db";
 import { agentGet } from "@/lib/agent-client";
 import { decryptSecret } from "@/lib/crypto";
 import { restartTunnel } from "@/lib/tunnel-orchestrator";
+import { getSettings, type AppSettingsValue } from "@/lib/settings";
 import { DeploymentStatus, EventCategory, Severity, TunnelStatus } from "@/generated/prisma/enums";
 
 /**
  * Server-side background poller: health-checks every tunnel via its two
- * agents every ~15s, records a TunnelStat sample, and drives real status
- * transitions -- independent of anyone having a browser tab open. On two
- * consecutive failures it makes exactly one automatic restart attempt (via
- * the same deployment queue/orchestrator a manual restart uses) before
- * flagging the tunnel FAILED and giving up, matching the platform's own
- * example log line ("Backhaul tunnel restarted / Reason: Health check
- * failed") without ever looping restarts forever.
+ * agents (interval configurable on the Settings page, ~15s by default),
+ * records a TunnelStat sample, and drives real status transitions --
+ * independent of anyone having a browser tab open. On two consecutive
+ * failures it makes exactly one automatic restart attempt (via the same
+ * deployment queue/orchestrator a manual restart uses, unless auto-restart
+ * is turned off in Settings) before flagging the tunnel FAILED and giving
+ * up, matching the platform's own example log line ("Backhaul tunnel
+ * restarted / Reason: Health check failed") without ever looping restarts
+ * forever.
  */
-
-const SAMPLE_INTERVAL_MS = 15_000;
-const STAT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface AgentHealth {
   process: string;
@@ -37,26 +37,56 @@ interface AgentHealth {
 interface TunnelState {
   failures: number;
   restarted: boolean;
+  failedLogged: boolean;
 }
 
 const state = new Map<string, TunnelState>();
 let started = false;
 let cycles = 0;
 
+/** Test-only escape hatch -- `cycles` and per-tunnel failure-streak state
+ * are module-level and would otherwise leak between test files/cases that
+ * share this module within one vitest worker (e.g. retention tests that
+ * depend on hitting an exact cycle-count multiple). */
+export function __resetHealthSamplerStateForTests(): void {
+  state.clear();
+  cycles = 0;
+}
+
 /** Idempotent: Next.js dev mode can invoke instrumentation.ts's register()
  * more than once across hot reloads -- a second call here must not stack a
- * second interval on top of the first. */
+ * second interval on top of the first. Self-rescheduling (setTimeout, not
+ * setInterval) so a Settings change to the health-check interval takes
+ * effect on the very next cycle instead of requiring a process restart. */
 export function startHealthSampler(): void {
   if (started) return;
   started = true;
-  setInterval(() => {
-    runSampleCycle().catch((err) => console.error("[health-sampler] cycle failed:", err));
-  }, SAMPLE_INTERVAL_MS);
+  scheduleNextCycle();
 }
 
-/** Exported for tests -- startHealthSampler wraps this in a setInterval for
- * production use; tests drive it directly against a fake clock of calls. */
+function scheduleNextCycle(): void {
+  getSettings()
+    .then((s) => s.healthCheckIntervalMs)
+    .catch(() => DEFAULT_INTERVAL_HINT_MS)
+    .then((intervalMs) => {
+      setTimeout(() => {
+        runSampleCycle()
+          .catch((err) => console.error("[health-sampler] cycle failed:", err))
+          .finally(scheduleNextCycle);
+      }, intervalMs);
+    });
+}
+
+/** Fallback delay only if getSettings() itself throws (e.g. DB briefly
+ * unavailable) -- normal operation always uses the real, current
+ * healthCheckIntervalMs setting. */
+const DEFAULT_INTERVAL_HINT_MS = 15_000;
+
+/** Exported for tests -- startHealthSampler wraps this in a self-
+ * rescheduling timer for production use; tests drive it directly. */
 export async function runSampleCycle(): Promise<void> {
+  const settings = await getSettings();
+
   // Server reachability must not depend on that server happening to own a
   // tunnel that's both non-DEPLOYING and gets sampled -- a server with no
   // tunnels, or whose only tunnel is stuck/failed/mid-deploy, would
@@ -72,17 +102,22 @@ export async function runSampleCycle(): Promise<void> {
 
   for (const tunnel of tunnels) {
     try {
-      await sampleTunnel(tunnel);
+      await sampleTunnel(tunnel, settings);
     } catch (err) {
       console.error(`[health-sampler] sampling tunnel ${tunnel.id} failed:`, err);
     }
   }
 
-  await sweepStuckDeployments();
+  await sweepStuckDeployments(settings);
 
   cycles += 1;
   if (cycles % 20 === 0) {
-    await prisma.tunnelStat.deleteMany({ where: { timestamp: { lt: new Date(Date.now() - STAT_RETENTION_MS) } } });
+    await prisma.tunnelStat.deleteMany({
+      where: { timestamp: { lt: new Date(Date.now() - settings.statRetentionMs) } },
+    });
+    await prisma.event.deleteMany({
+      where: { createdAt: { lt: new Date(Date.now() - settings.logRetentionDays * 24 * 60 * 60 * 1000) } },
+    });
   }
 }
 
@@ -114,13 +149,12 @@ async function pingAllServers(): Promise<void> {
  * whose deploy handler threw before ever updating tunnel status (any future
  * code path that repeats that mistake, not just the one already fixed in
  * tunnel-orchestrator.ts). Anything sitting at DEPLOYING/REMOVING for
- * longer than a deploy should ever reasonably take, with no deployment of
- * its own still queued or running, gets force-marked FAILED and logged --
- * never left stuck indefinitely with no way for the UI to act on it. */
-const STUCK_DEPLOYMENT_TIMEOUT_MS = 10 * 60 * 1000;
-
-async function sweepStuckDeployments(): Promise<void> {
-  const cutoff = new Date(Date.now() - STUCK_DEPLOYMENT_TIMEOUT_MS);
+ * longer than a deploy should ever reasonably take (configurable in
+ * Settings), with no deployment of its own still queued or running, gets
+ * force-marked FAILED and logged -- never left stuck indefinitely with no
+ * way for the UI to act on it. */
+async function sweepStuckDeployments(settings: AppSettingsValue): Promise<void> {
+  const cutoff = new Date(Date.now() - settings.stuckDeploymentTimeoutMs);
   const stuck = await prisma.tunnel.findMany({
     where: {
       status: { in: [TunnelStatus.DEPLOYING, TunnelStatus.REMOVING] },
@@ -141,7 +175,7 @@ async function sweepStuckDeployments(): Promise<void> {
       tunnel.id,
       Severity.ERROR,
       "TUNNEL_DEPLOY_TIMED_OUT",
-      `Tunnel "${tunnel.name}" sat at ${tunnel.status} for over ${STUCK_DEPLOYMENT_TIMEOUT_MS / 60000} minutes with no deployment in progress -- forced to FAILED so it can be retried or deleted.`,
+      `Tunnel "${tunnel.name}" sat at ${tunnel.status} for over ${settings.stuckDeploymentTimeoutMs / 60000} minutes with no deployment in progress -- forced to FAILED so it can be retried or deleted.`,
     );
   }
 }
@@ -197,7 +231,7 @@ type TunnelWithServers = Awaited<ReturnType<typeof prisma.tunnel.findMany>>[numb
   destServer: { host: string; agentPort: number; agentTokenEnc: string; tlsFingerprint: string };
 };
 
-async function sampleTunnel(tunnel: TunnelWithServers): Promise<void> {
+async function sampleTunnel(tunnel: TunnelWithServers, settings: AppSettingsValue): Promise<void> {
   const [sourceHealth, destHealth] = await Promise.all([
     fetchHealth(tunnel.sourceServer, tunnel.id),
     fetchHealth(tunnel.destServer, tunnel.id),
@@ -226,7 +260,7 @@ async function sampleTunnel(tunnel: TunnelWithServers): Promise<void> {
   if (destHealth) await prisma.server.update({ where: { id: tunnel.destServerId }, data: { lastSeenAt: now } });
 
   const healthy = isSideHealthy(sourceHealth) && isSideHealthy(destHealth);
-  const s = state.get(tunnel.id) ?? { failures: 0, restarted: false };
+  const s = state.get(tunnel.id) ?? { failures: 0, restarted: false, failedLogged: false };
 
   if (healthy) {
     if (tunnel.status !== TunnelStatus.RUNNING) {
@@ -258,7 +292,7 @@ async function sampleTunnel(tunnel: TunnelWithServers): Promise<void> {
     return;
   }
 
-  if (s.failures === 2 && !s.restarted) {
+  if (settings.autoRestartEnabled && s.failures === 2 && !s.restarted) {
     s.restarted = true;
     await logEvent(
       tunnel.id,
@@ -278,12 +312,19 @@ async function sampleTunnel(tunnel: TunnelWithServers): Promise<void> {
     where: { id: tunnel.id },
     data: { status: TunnelStatus.FAILED, lastCheckedAt: new Date() },
   });
-  if (s.failures === 3) {
+  // Logged exactly once per failure streak (not every cycle it stays
+  // FAILED) -- the message differs depending on whether auto-restart was
+  // ever attempted, since "after an automatic restart" would be misleading
+  // when the setting is off and none was.
+  if (!s.failedLogged) {
+    s.failedLogged = true;
     await logEvent(
       tunnel.id,
       Severity.ERROR,
       "TUNNEL_HEALTH_FAILED",
-      `Tunnel "${tunnel.name}" is still failing health checks after an automatic restart -- flagged FAILED and will not be auto-restarted again.`,
+      s.restarted
+        ? `Tunnel "${tunnel.name}" is still failing health checks after an automatic restart -- flagged FAILED and will not be auto-restarted again.`
+        : `Tunnel "${tunnel.name}" is failing health checks -- flagged FAILED. Auto-restart is disabled in Settings.`,
     );
   }
 }

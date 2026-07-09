@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { getSettings } from "@/lib/settings";
 import { DeploymentKind, DeploymentStatus } from "@/generated/prisma/enums";
 
 /**
@@ -44,7 +45,7 @@ export class DeploymentQueue {
     maxAttempts?: number;
     handler: JobHandler;
   }): Promise<string> {
-    const maxAttempts = params.maxAttempts ?? 3;
+    const maxAttempts = params.maxAttempts ?? (await getSettings()).deploymentMaxAttempts;
     const deployment = await prisma.deployment.create({
       data: {
         tunnelId: params.tunnelId,

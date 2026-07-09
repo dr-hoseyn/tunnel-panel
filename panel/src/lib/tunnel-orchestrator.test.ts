@@ -103,6 +103,20 @@ vi.mock("@/lib/agent-client", () => ({
   agentGet: (...args: unknown[]) => agentGetMock(...args),
 }));
 
+// deploy-queue.ts (real, unmocked here) calls getSettings() for its default
+// maxAttempts -- @/lib/db's fake above has no `appSettings` table, so this
+// is mocked directly rather than widening that fake for an unrelated module.
+vi.mock("@/lib/settings", () => ({
+  getSettings: async () => ({
+    healthCheckIntervalMs: 15000,
+    statRetentionMs: 0,
+    stuckDeploymentTimeoutMs: 0,
+    deploymentMaxAttempts: 3,
+    autoRestartEnabled: true,
+    logRetentionDays: 30,
+  }),
+}));
+
 const { createTunnel, deleteTunnel, startTunnel, retryTunnelDeploy } = await import("./tunnel-orchestrator");
 const { encryptSecret } = await import("./crypto");
 

@@ -35,20 +35,26 @@ model User {
 // agentTokenEnc/*Enc fields are AES-256-GCM ciphertext (see src/lib/crypto.ts),
 // not cleartext -- closes the gap both READMEs previously flagged for phase 1.
 model Server {
-  id             String   @id @default(cuid())
-  name           String
-  host           String
-  agentPort      Int      @default(8443)
-  agentTokenEnc  String
-  tlsFingerprint String
-  location       String?
-  agentVersion   String?
-  agentCommit    String?
-  agentOs        String?
-  agentArch      String?
-  lastSeenAt     DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id                   String    @id @default(cuid())
+  name                 String
+  host                 String
+  agentPort            Int       @default(8443)
+  agentTokenEnc        String
+  tlsFingerprint       String
+  location             String?
+  agentVersion         String?
+  agentCommit          String?
+  agentOs              String?
+  agentArch            String?
+  lastSeenAt           DateTime?
+  // Cached result of the last on-demand "check for updates" click (see
+  // /api/v1/servers/[id]/check-agent-update) -- deliberately NOT refreshed
+  // automatically on every page load, so the panel never spams GitHub's
+  // release API just because someone opened a server's detail page.
+  latestAgentVersion   String?
+  latestAgentCheckedAt DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   tunnelsAsSource Tunnel[] @relation("TunnelSourceServer")
   tunnelsAsDest   Tunnel[] @relation("TunnelDestServer")
@@ -91,12 +97,12 @@ model Tunnel {
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
-  sourceServer Server           @relation("TunnelSourceServer", fields: [sourceServerId], references: [id])
-  destServer   Server           @relation("TunnelDestServer", fields: [destServerId], references: [id])
-  createdBy    User?            @relation("TunnelCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  sourceServer Server         @relation("TunnelSourceServer", fields: [sourceServerId], references: [id])
+  destServer   Server         @relation("TunnelDestServer", fields: [destServerId], references: [id])
+  createdBy    User?          @relation("TunnelCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   deployments  Deployment[]
   stats        TunnelStat[]
-  events       Event[]          @relation("EventTunnel")
+  events       Event[]        @relation("EventTunnel")
   backups      TunnelBackup[]
 }
 
@@ -241,4 +247,20 @@ model TunnelBackup {
   createdAt           DateTime @default(now())
 
   tunnel Tunnel @relation(fields: [tunnelId], references: [id], onDelete: Cascade)
+}
+
+// Singleton row (always id "singleton") holding the operational knobs the
+// Settings page exposes -- health-sampler.ts and deploy-queue.ts read this
+// instead of the hardcoded constants they used to have, so an admin can
+// tune them without a redeploy. src/lib/settings.ts is the only reader/
+// writer; everything else goes through its getSettings()/updateSettings().
+model AppSettings {
+  id                       String   @id @default("singleton")
+  healthCheckIntervalMs    Int      @default(15000)
+  statRetentionMs          BigInt   @default(604800000) // 7 days
+  stuckDeploymentTimeoutMs Int      @default(600000) // 10 minutes
+  deploymentMaxAttempts    Int      @default(3)
+  autoRestartEnabled       Boolean  @default(true)
+  logRetentionDays         Int      @default(30)
+  updatedAt                DateTime @updatedAt
 }

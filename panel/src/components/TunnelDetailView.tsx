@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Play, Square, RotateCw, ScrollText, Archive, RefreshCw, AlertTriangle, Loader2, Copy, Wrench, BellOff } from "lucide-react";
 import { TunnelStatusBadge } from "@/components/TunnelStatusBadge";
 import { ConfirmButton } from "@/components/ConfirmButton";
 import { TrafficChart } from "@/components/TrafficChart";
+import { TunnelLogsTail } from "@/components/TunnelLogsTail";
 
 interface ServerRef {
   id: string;
@@ -375,7 +376,7 @@ export function TunnelDetailView({
         </div>
       )}
 
-      {tab === "Logs" && <LogsTail tunnelId={tunnel.id} />}
+      {tab === "Logs" && <TunnelLogsTail tunnelId={tunnel.id} />}
     </div>
   );
 }
@@ -428,49 +429,4 @@ function formatBytes(value: number): string {
     i++;
   }
   return `${n.toFixed(1)} ${units[i]}`;
-}
-
-interface LogLine {
-  side: string;
-  server: string;
-  line: string;
-}
-
-function LogsTail({ tunnelId }: { tunnelId: string }) {
-  const [lines, setLines] = useState<LogLine[]>([]);
-  const [connected, setConnected] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const source = new EventSource(`/api/v1/tunnels/${tunnelId}/logs/stream`);
-    source.addEventListener("line", (e) => {
-      const data = JSON.parse((e as MessageEvent).data) as LogLine;
-      setConnected(true);
-      setLines((prev) => [...prev.slice(-500), data]);
-    });
-    source.addEventListener("side-error", (e) => {
-      const data = JSON.parse((e as MessageEvent).data) as { side: string; server: string; message: string };
-      setLines((prev) => [...prev.slice(-500), { side: data.side, server: data.server, line: `[error] ${data.message}` }]);
-    });
-    return () => source.close();
-  }, [tunnelId]);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [lines]);
-
-  return (
-    <div>
-      <p className="mb-2 text-xs text-neutral-500">{connected ? "Live -- polling both agents every ~1.5s." : "Connecting..."}</p>
-      <div className="h-96 overflow-y-auto rounded-lg border border-neutral-800 bg-neutral-950 p-3 font-mono text-xs">
-        {lines.length === 0 && <p className="text-neutral-600">No log lines yet.</p>}
-        {lines.map((l, i) => (
-          <div key={i} className="text-neutral-400">
-            <span className="text-neutral-600">[{l.side === "source" ? l.server : l.server}]</span> {l.line}
-          </div>
-        ))}
-        <div ref={bottomRef} />
-      </div>
-    </div>
-  );
 }

@@ -100,29 +100,37 @@ func (d *hysteria2Driver) WriteConfig() error {
 	obfsPassword := d.spec.Extra["obfs_password"]
 	var b strings.Builder
 
+	// Every interpolated string below uses %q (YAML double-quoted scalars use
+	// the same backslash-escaping rules as Go string literals for the ASCII
+	// control characters that matter here), not raw %s -- Extra map values
+	// (sni, obfs_password) come from the create-tunnel request and are only
+	// charset-validated at the Go boundary by ValidateYAMLSafe (see
+	// validate.go); %q is the second, structural layer that guarantees a
+	// value can never inject an extra YAML key/line no matter what gets
+	// past that allowlist.
 	if d.spec.Role == RoleServer {
 		if _, err := tlscert.LoadOrGenerate(d.certPath, d.keyPath); err != nil {
 			return fmt.Errorf("preparing TLS certificate: %w", err)
 		}
 		fmt.Fprintf(&b, "listen: :%d\n\n", d.spec.Port)
 		b.WriteString("tls:\n")
-		fmt.Fprintf(&b, "  cert: %s\n", d.certPath)
-		fmt.Fprintf(&b, "  key: %s\n\n", d.keyPath)
+		fmt.Fprintf(&b, "  cert: %q\n", d.certPath)
+		fmt.Fprintf(&b, "  key: %q\n\n", d.keyPath)
 		b.WriteString("auth:\n  type: password\n")
-		fmt.Fprintf(&b, "  password: %s\n", d.spec.Secret)
+		fmt.Fprintf(&b, "  password: %q\n", d.spec.Secret)
 	} else {
-		fmt.Fprintf(&b, "server: %s\n\n", d.spec.Peer)
-		fmt.Fprintf(&b, "auth: %s\n\n", d.spec.Secret)
+		fmt.Fprintf(&b, "server: %q\n\n", d.spec.Peer)
+		fmt.Fprintf(&b, "auth: %q\n\n", d.spec.Secret)
 		b.WriteString("tls:\n")
 		if sni := d.spec.Extra["sni"]; sni != "" {
-			fmt.Fprintf(&b, "  sni: %s\n", sni)
+			fmt.Fprintf(&b, "  sni: %q\n", sni)
 		}
 		b.WriteString("  insecure: true\n")
 	}
 
 	if obfsPassword != "" {
 		b.WriteString("\nobfs:\n  type: salamander\n  salamander:\n")
-		fmt.Fprintf(&b, "    password: %s\n", obfsPassword)
+		fmt.Fprintf(&b, "    password: %q\n", obfsPassword)
 	}
 
 	if d.spec.Role == RoleClient && len(d.spec.Ports) > 0 {

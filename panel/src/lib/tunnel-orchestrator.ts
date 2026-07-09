@@ -304,12 +304,24 @@ async function simpleAction(
     tunnelId,
     kind,
     handler: async (ctx) => {
-      const { source, dest } = await bothTargets(tunnel);
-      for (const side of [source, dest]) {
-        await ctx.step(`${action}-${side.name}`, "started");
-        await agentPost(side.target, `/api/v1/managed-tunnels/${tunnelId}/${action}`);
-        await ctx.step(`${action}-${side.name}`, "ok");
+      // Same guarantee as deployBothSides: whatever fails, however far it
+      // got, the tunnel must end at a terminal status -- not left at
+      // whatever it was before, which the UI (optimistically showing
+      // "pending") would otherwise never learn had actually failed.
+      try {
+        const { source, dest } = await bothTargets(tunnel);
+        for (const side of [source, dest]) {
+          await ctx.step(`${action}-${side.name}`, "started");
+          await agentPost(side.target, `/api/v1/managed-tunnels/${tunnelId}/${action}`);
+          await ctx.step(`${action}-${side.name}`, "ok");
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await ctx.step(action, "failed", message);
+        await failDeployment(tunnelId, tunnel.name, `${action} failed: ${message}`);
+        throw err;
       }
+
       const status: TunnelStatus = action === "stop" ? TunnelStatus.STOPPED : TunnelStatus.RUNNING;
       await prisma.tunnel.update({
         where: { id: tunnelId },
@@ -346,6 +358,7 @@ export async function deleteTunnel(tunnelId: string): Promise<{ deploymentId: st
     handler: async (ctx) => {
       await prisma.tunnel.update({ where: { id: tunnelId }, data: { status: TunnelStatus.REMOVING } });
       const { source, dest } = await bothTargets(tunnel);
+      const failedSides: string[] = [];
       for (const side of [source, dest]) {
         await ctx.step(`remove-${side.name}`, "started");
         try {
@@ -354,9 +367,29 @@ export async function deleteTunnel(tunnelId: string): Promise<{ deploymentId: st
         } catch (err) {
           // Best-effort: a side that's already gone (e.g. its server was
           // deregistered, or this agent lost the tunnel out of band) must
-          // not block deleting the panel's own record of the tunnel.
+          // not block deleting the panel's own record of the tunnel. But
+          // "best-effort" must not mean "silent" -- if the agent's own
+          // Remove() only got partway (e.g. it stopped the service but
+          // couldn't delete the config directory), that side is left with
+          // orphaned state the panel no longer has any record of at all
+          // once this tunnel row is gone. There's no reconciliation/orphan
+          // scan yet (that's a real gap, not fixed here), so a clearly
+          // flagged WARNING event -- naming the server -- is the only trace
+          // that survives; an operator needs it to know to check that VPS
+          // by hand.
           await ctx.step(`remove-${side.name}`, "failed", err instanceof Error ? err.message : String(err));
+          failedSides.push(side.name);
         }
+      }
+      if (failedSides.length > 0) {
+        await prisma.event.create({
+          data: {
+            category: EventCategory.DEPLOYMENT,
+            type: "TUNNEL_DELETE_CLEANUP_INCOMPLETE",
+            severity: Severity.WARNING,
+            message: `Tunnel "${tunnel.name}" was removed from the panel, but cleanup failed on ${failedSides.join(" and ")} -- that server may still have leftover config/service/firewall state for this tunnel. Check it manually.`,
+          },
+        });
       }
       await prisma.event.create({
         data: {

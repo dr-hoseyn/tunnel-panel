@@ -133,3 +133,36 @@ func TestSpecValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateExtraValue(t *testing.T) {
+	valid := []string{"tcp", "wss", "example.com", "some password-123", ""}
+	for _, v := range valid {
+		if err := ValidateExtraValue(v); err != nil {
+			t.Errorf("expected %q to be valid, got %v", v, err)
+		}
+	}
+
+	// Each of these is a config-injection attempt: a newline lets a value
+	// break out of a single YAML/TOML line and add arbitrary extra keys.
+	invalid := []string{
+		"tcp\ninsecure: false",
+		"tcp\"\ntcpForwarding:\n  - listen: 0.0.0.0:1\n    remote: 127.0.0.1:1",
+		"a\"b",
+		"a\\b",
+	}
+	for _, v := range invalid {
+		if err := ValidateExtraValue(v); err == nil {
+			t.Errorf("expected %q to be rejected as an injection attempt, got no error", v)
+		}
+	}
+}
+
+func TestSpecValidateRejectsInjectionInExtra(t *testing.T) {
+	spec := Spec{
+		ID: "t", Secret: "s", Role: RoleServer, Port: 443,
+		Extra: map[string]string{"transport": "tcp\ninsecure: false"},
+	}
+	if err := spec.Validate(); err == nil {
+		t.Error("expected a newline-containing Extra value to be rejected")
+	}
+}

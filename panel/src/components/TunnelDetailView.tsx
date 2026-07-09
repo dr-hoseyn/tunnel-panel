@@ -94,24 +94,32 @@ export function TunnelDetailView({ tunnel, stats }: { tunnel: TunnelData; stats:
 
   async function createBackup() {
     setBackupMessage(null);
-    const res = await fetch(`/api/v1/tunnels/${tunnel.id}/backup`, { method: "POST" });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setActionError(data.error ?? "Failed to create backup");
-      return;
+    try {
+      const res = await fetch(`/api/v1/tunnels/${tunnel.id}/backup`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setActionError(data.error ?? "Failed to create backup");
+        return;
+      }
+      setBackupMessage("Backup created -- see the Backups page to restore it.");
+    } catch {
+      setActionError("Network error while contacting the panel API");
     }
-    setBackupMessage("Backup created -- see the Backups page to restore it.");
   }
 
   async function deleteTunnel() {
-    const res = await fetch(`/api/v1/tunnels/${tunnel.id}`, { method: "DELETE" });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setActionError(data.error ?? "Failed to delete tunnel");
-      return;
+    try {
+      const res = await fetch(`/api/v1/tunnels/${tunnel.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setActionError(data.error ?? "Failed to delete tunnel");
+        return;
+      }
+      router.push("/tunnels");
+      router.refresh();
+    } catch {
+      setActionError("Network error while contacting the panel API");
     }
-    router.push("/tunnels");
-    router.refresh();
   }
 
   return (

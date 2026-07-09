@@ -133,5 +133,29 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("port mapping local: %w", err)
 		}
 	}
+	for key, value := range s.Extra {
+		if err := ValidateExtraValue(value); err != nil {
+			return fmt.Errorf("extra[%s]: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// extraValuePattern is deliberately generous (covers real SNI hostnames,
+// obfuscation passwords, transport names) while still rejecting anything
+// that could plausibly break out of a quoted YAML/TOML scalar -- no
+// newlines, no raw quote characters, no control characters. This is
+// defense in depth: every driver that writes one of these into a config
+// file also uses %q (structural quoting), not %s: this check means a value
+// has to defeat *both* layers, not just one, to do anything unexpected.
+var extraValuePattern = regexp.MustCompile(`^[a-zA-Z0-9 ._:/@-]{0,255}$`)
+
+// ValidateExtraValue restricts Spec.Extra values (transport names, SNI
+// hostnames, obfuscation passwords -- whatever a given core's registry
+// descriptor declares) to a conservative allowlist charset.
+func ValidateExtraValue(value string) error {
+	if !extraValuePattern.MatchString(value) {
+		return fmt.Errorf("invalid value %q: must be alnum/space/._:/@- only, max 255 chars", value)
+	}
 	return nil
 }

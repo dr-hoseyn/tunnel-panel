@@ -121,9 +121,19 @@ enum DeploymentStatus {
 // Durable backing store for the deployment queue (src/lib/deploy-queue.ts):
 // every tunnel lifecycle operation is one row here, so progress survives
 // page reloads/multiple tabs and cancellation has something concrete to flip.
+//
+// tunnelId is nullable with onDelete: SetNull, not Cascade -- deliberately.
+// A DELETE deployment's own handler deletes the Tunnel row *while its own
+// Deployment job is still running under it* (see deleteTunnel in
+// tunnel-orchestrator.ts); with Cascade, that delete would remove this very
+// Deployment row out from under the job, and deploy-queue.ts's post-handler
+// `status: SUCCEEDED` update would then throw "record not found" -- an
+// unhandled rejection on every single tunnel deletion. SetNull keeps the
+// deployment's history (and its `steps` log) intact after the tunnel itself
+// is gone, which is also just more correct for an audit trail.
 model Deployment {
   id          String           @id @default(cuid())
-  tunnelId    String
+  tunnelId    String?
   kind        DeploymentKind
   status      DeploymentStatus @default(QUEUED)
   steps       Json             @default("[]")
@@ -133,7 +143,7 @@ model Deployment {
   finishedAt  DateTime?
   createdAt   DateTime         @default(now())
 
-  tunnel Tunnel  @relation(fields: [tunnelId], references: [id], onDelete: Cascade)
+  tunnel Tunnel? @relation(fields: [tunnelId], references: [id], onDelete: SetNull)
   events Event[] @relation("EventDeployment")
 }
 

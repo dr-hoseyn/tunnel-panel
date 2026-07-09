@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import { registerServer, RegisterServerError } from "@/lib/register-server";
+import { requireRoleResponse } from "@/lib/rbac";
 
 export async function GET() {
-  const session = await auth();
-  if (!session) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
+  const auth = await requireRoleResponse("VIEWER");
+  if ("response" in auth) return auth.response;
+
   const servers = await prisma.server.findMany({
     select: { id: true, name: true, host: true, agentPort: true, createdAt: true },
     orderBy: { createdAt: "asc" },
@@ -16,10 +15,12 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const session = await auth();
-  if (!session) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
+  // Registering a server is a write action (and, via the SSH path in
+  // provision/route.ts, can install software on a new box) -- this used to
+  // only check "is logged in" at all, which let a VIEWER-role account
+  // (meant to be read-only) register servers same as an OPERATOR.
+  const auth = await requireRoleResponse("OPERATOR");
+  if ("response" in auth) return auth.response;
 
   const body = await request.json().catch(() => null);
   const name = typeof body?.name === "string" ? body.name.trim() : "";

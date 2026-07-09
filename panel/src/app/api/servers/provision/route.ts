@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { provisionAgentViaSsh, ProvisionError } from "@/lib/ssh-provision";
 import { registerServer, RegisterServerError } from "@/lib/register-server";
+import { requireRoleResponse } from "@/lib/rbac";
 
 export async function POST(request: Request) {
-  const session = await auth();
-  if (!session) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
+  // SSH-provisioning installs software on an arbitrary host using
+  // credentials in the request body -- OPERATOR minimum, same as manual
+  // registration (see the sibling route.ts's POST for why this was missing).
+  const auth = await requireRoleResponse("OPERATOR");
+  if ("response" in auth) return auth.response;
 
   const body = await request.json().catch(() => null);
   const name = typeof body?.name === "string" ? body.name.trim() : "";

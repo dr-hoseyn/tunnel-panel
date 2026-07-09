@@ -148,16 +148,24 @@ async function runJob(
   }
 }
 
-/** AgentError without an HTTP status means the request itself failed to
- * complete (timeout, connection refused, DNS) -- worth a retry. A 4xx means
- * the agent explicitly rejected our request (bad spec, conflict, unknown
- * core); retrying identical input would just fail identically. */
+/** Only network-shaped agent failures are retryable, and only by name, not
+ * merely by duck-typing "has a .status property" -- OrchestratorError also
+ * has a `.status` (e.g. 404 "server not found", 409 "already exists") and
+ * previously matched the old broad check too, and any *other* thrown value
+ * with no `.status` at all (a TypeError from a real bug, a Prisma error)
+ * used to default to retryable, silently retrying a programming error up to
+ * maxAttempts times with backoff instead of surfacing it immediately.
+ * AgentError without an HTTP status means the request itself failed to
+ * complete (timeout, connection refused, DNS) -- worth a retry. An AgentError
+ * with a 4xx means the agent explicitly rejected our request (bad spec,
+ * conflict, unknown core); retrying identical input would just fail
+ * identically. */
 function isRetryable(err: unknown): boolean {
-  if (err && typeof err === "object" && "status" in err) {
-    const status = (err as { status?: number }).status;
+  if (err instanceof Error && err.name === "AgentError") {
+    const status = (err as Error & { status?: number }).status;
     return status === undefined || status >= 500;
   }
-  return true;
+  return false;
 }
 
 function backoffMs(attempt: number): number {

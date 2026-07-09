@@ -183,8 +183,12 @@ func (d *gostDriver) WriteConfig() error {
 		chains.WriteString("    nodes:\n")
 		fmt.Fprintf(&chains, "    - name: %s-hop0-node0\n", chainName)
 		fmt.Fprintf(&chains, "      addr: \"%s:%d\"\n", peerHost, p.Remote)
-		fmt.Fprintf(&chains, "      connector:\n        type: %s\n", transport)
-		fmt.Fprintf(&chains, "      dialer:\n        type: %s\n", transport)
+		// %q, not %s: transport comes from Extra["transport"] (a
+		// create-tunnel request field), and this is the same "structural
+		// quoting is the real guard, charset validation is defense in
+		// depth" reasoning as hysteria2.go's WriteConfig.
+		fmt.Fprintf(&chains, "      connector:\n        type: %q\n", transport)
+		fmt.Fprintf(&chains, "      dialer:\n        type: %q\n", transport)
 	}
 
 	if err := os.WriteFile(filepath.Join(d.servicesDir, d.fragmentName), []byte(services.String()), 0o600); err != nil {

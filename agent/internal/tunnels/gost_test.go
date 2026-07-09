@@ -83,7 +83,7 @@ func TestGostWriteConfigClientRole(t *testing.T) {
 		t.Fatalf("reading chain fragment: %v", err)
 	}
 	chain := string(chainData)
-	for _, want := range []string{`addr: "5.6.7.8:9000"`, "type: tcp"} {
+	for _, want := range []string{`addr: "5.6.7.8:9000"`, `type: "tcp"`} {
 		if !strings.Contains(chain, want) {
 			t.Errorf("expected chain fragment to contain %q, got:\n%s", want, chain)
 		}

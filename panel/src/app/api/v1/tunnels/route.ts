@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { createTunnel, OrchestratorError } from "@/lib/tunnel-orchestrator";
-import { listCoreDescriptors } from "@/lib/cores/registry";
+import { getCoreDescriptor, listCoreDescriptors } from "@/lib/cores/registry";
 import { requireRoleResponse } from "@/lib/rbac";
 
 export async function GET() {
@@ -49,10 +49,25 @@ export async function POST(request: Request) {
     );
   }
 
+  // Each core's registry descriptor declares its own extra-field schema
+  // (e.g. transport must be one of a fixed enum) -- validated here, not
+  // just charset-checked generically, so a request can't send a value the
+  // wizard's own <select> would never offer. This is on top of, not instead
+  // of, the agent's own ValidateExtraValue charset check.
+  const descriptor = getCoreDescriptor(parsed.data.core as never);
+  const extraParsed = descriptor.extraSchema.safeParse(parsed.data.extra ?? {});
+  if (!extraParsed.success) {
+    return NextResponse.json(
+      { error: `invalid options for ${descriptor.label}: ${extraParsed.error.issues.map((i) => i.message).join("; ")}` },
+      { status: 400 },
+    );
+  }
+
   try {
     const { tunnel, deploymentId } = await createTunnel({
       ...parsed.data,
       core: parsed.data.core as never,
+      extra: extraParsed.data,
       createdById: auth.session.user?.id,
     });
     return NextResponse.json({ tunnel, deploymentId }, { status: 202 });

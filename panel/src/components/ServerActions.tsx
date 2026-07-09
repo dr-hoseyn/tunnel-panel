@@ -40,36 +40,48 @@ export function ServerActions({ id, name, location, isAdmin }: Props) {
 
   async function restartAgent() {
     setError(null);
-    const res = await fetch(`/api/v1/servers/${id}/restart-agent`, { method: "POST" });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setError(data.error ?? "Failed to restart the agent");
-      return;
+    try {
+      const res = await fetch(`/api/v1/servers/${id}/restart-agent`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed to restart the agent");
+        return;
+      }
+      setTestResult("Agent restart requested.");
+    } catch {
+      setError("Network error while contacting the panel API");
     }
-    setTestResult("Agent restart requested.");
   }
 
   async function rotateToken() {
     setError(null);
-    const res = await fetch(`/api/v1/servers/${id}/rotate-token`, { method: "POST" });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setError(data.error ?? "Failed to rotate the token");
-      return;
+    try {
+      const res = await fetch(`/api/v1/servers/${id}/rotate-token`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed to rotate the token");
+        return;
+      }
+      setTestResult("Agent token rotated.");
+    } catch {
+      setError("Network error while contacting the panel API");
     }
-    setTestResult("Agent token rotated.");
   }
 
   async function removeServer() {
     setError(null);
-    const res = await fetch(`/api/servers/${id}`, { method: "DELETE" });
-    if (res.status === 204) {
-      router.push("/servers");
-      router.refresh();
-      return;
+    try {
+      const res = await fetch(`/api/servers/${id}`, { method: "DELETE" });
+      if (res.status === 204) {
+        router.push("/servers");
+        router.refresh();
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      setError(data.error ?? "Failed to remove server");
+    } catch {
+      setError("Network error while contacting the panel API");
     }
-    const data = await res.json().catch(() => ({}));
-    setError(data.error ?? "Failed to remove server");
   }
 
   async function saveEdit(e: React.FormEvent<HTMLFormElement>) {

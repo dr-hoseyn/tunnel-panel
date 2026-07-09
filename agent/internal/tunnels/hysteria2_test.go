@@ -45,7 +45,7 @@ func TestHysteria2WriteConfigServerRole(t *testing.T) {
 		t.Fatalf("reading generated config: %v", err)
 	}
 	config := string(data)
-	for _, want := range []string{"listen: :36712", "auth:", "  type: password", "  password: auth-password", "tls:"} {
+	for _, want := range []string{"listen: :36712", "auth:", "  type: password", `  password: "auth-password"`, "tls:"} {
 		if !strings.Contains(config, want) {
 			t.Errorf("expected config to contain %q, got:\n%s", want, config)
 		}
@@ -80,8 +80,8 @@ func TestHysteria2WriteConfigClientRole(t *testing.T) {
 	}
 	config := string(data)
 	for _, want := range []string{
-		"server: 1.2.3.4:36712",
-		"auth: auth-password",
+		`server: "1.2.3.4:36712"`,
+		`auth: "auth-password"`,
 		"insecure: true",
 		"tcpForwarding:",
 		"- listen: 0.0.0.0:2222",

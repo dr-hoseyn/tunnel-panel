@@ -11,13 +11,17 @@ export function TunnelRowActions({ id, status }: { id: string; status: string })
 
   async function del() {
     setError(null);
-    const res = await fetch(`/api/v1/tunnels/${id}`, { method: "DELETE" });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setError(data.error ?? "Failed to delete");
-      return;
+    try {
+      const res = await fetch(`/api/v1/tunnels/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed to delete");
+        return;
+      }
+      router.refresh();
+    } catch {
+      setError("Network error while contacting the panel API");
     }
-    router.refresh();
   }
 
   async function retry() {
@@ -31,6 +35,8 @@ export function TunnelRowActions({ id, status }: { id: string; status: string })
         return;
       }
       router.refresh();
+    } catch {
+      setError("Network error while contacting the panel API");
     } finally {
       setBusy(false);
     }

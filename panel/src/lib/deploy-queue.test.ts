@@ -68,6 +68,18 @@ beforeEach(() => {
   fakePrisma.__rows.clear();
 });
 
+/** isRetryable() checks err.name === "AgentError" specifically, not just
+ * "has a .status property" (OrchestratorError also has one, and so would
+ * any accidental bug's thrown value) -- construct a real-shaped one instead
+ * of a bare Error, so these tests actually exercise that check rather than
+ * happening to pass some looser version of it. */
+function agentError(message: string, status?: number): Error {
+  const err = new Error(message);
+  err.name = "AgentError";
+  if (status !== undefined) (err as Error & { status?: number }).status = status;
+  return err;
+}
+
 describe("DeploymentQueue", () => {
   it("runs a successful handler through to SUCCEEDED", async () => {
     const id = await DeploymentQueue.enqueue({
@@ -92,7 +104,7 @@ describe("DeploymentQueue", () => {
       handler: async () => {
         calls++;
         if (calls < 2) {
-          throw Object.assign(new Error("agent unreachable"), {}); // no `status` -> retryable
+          throw agentError("agent unreachable"); // AgentError, no status -> retryable
         }
       },
     });
@@ -103,7 +115,7 @@ describe("DeploymentQueue", () => {
     expect(fakePrisma.__rows.get(id)!.status).toBe("SUCCEEDED");
   }, 10_000);
 
-  it("does not retry a non-retryable (4xx-shaped) failure", async () => {
+  it("does not retry a non-retryable (4xx-shaped AgentError) failure", async () => {
     let calls = 0;
     const id = await DeploymentQueue.enqueue({
       tunnelId: "t3",
@@ -111,7 +123,23 @@ describe("DeploymentQueue", () => {
       maxAttempts: 3,
       handler: async () => {
         calls++;
-        throw Object.assign(new Error("bad request"), { status: 400 });
+        throw agentError("bad request", 400);
+      },
+    });
+    await flushQueue();
+    expect(calls).toBe(1);
+    expect(fakePrisma.__rows.get(id)!.status).toBe("FAILED");
+  });
+
+  it("never retries a plain/programming error, even one with a .status field", async () => {
+    let calls = 0;
+    const id = await DeploymentQueue.enqueue({
+      tunnelId: "t3b",
+      kind: "START" as never,
+      maxAttempts: 3,
+      handler: async () => {
+        calls++;
+        throw Object.assign(new TypeError("cannot read property of undefined"), { status: 500 });
       },
     });
     await flushQueue();
@@ -127,7 +155,7 @@ describe("DeploymentQueue", () => {
       maxAttempts: 2,
       handler: async () => {
         calls++;
-        throw new Error("agent unreachable");
+        throw agentError("agent unreachable");
       },
     });
     await flushQueue(1500);

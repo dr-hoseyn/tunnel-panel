@@ -12,4 +12,6 @@ export async function register() {
   }
   const { startHealthSampler } = await import("@/lib/health-sampler");
   startHealthSampler();
+  const { startNotificationSampler } = await import("@/lib/notification-sampler");
+  startNotificationSampler();
 }

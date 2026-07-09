@@ -202,6 +202,30 @@ model Event {
   @@index([category, createdAt])
 }
 
+// User-facing alerts someone can read/dismiss from the header bell -- a
+// curated subset, NOT the same thing as Event (the full audit/deployment/
+// runtime feed backing the Logs page). notification-sampler.ts derives these
+// from specific event-worthy Event rows (plus a couple of signals Event
+// doesn't carry, like a server going stale) and stamps sourceEventId so the
+// same Event can never be converted twice -- the @unique is what makes each
+// sampler cycle idempotent without needing to pre-check every row by hand.
+// serverId/tunnelId are plain unrelated scalars (no @relation) so linking a
+// notification to its tunnel/server doesn't require touching those models.
+model Notification {
+  id            String   @id @default(cuid())
+  type          String
+  severity      Severity @default(INFO)
+  title         String
+  message       String
+  read          Boolean  @default(false)
+  sourceEventId String?  @unique
+  serverId      String?
+  tunnelId      String?
+  createdAt     DateTime @default(now())
+
+  @@index([read, createdAt])
+}
+
 // Snapshot backing the "Backup"/"Rebuild config" tunnel actions -- restorable
 // without manual intervention, so it captures everything needed to
 // regenerate the tunnel: config, the generated unit(s), the secret, and

@@ -3,6 +3,7 @@ import Credentials from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/db";
 import { authConfig } from "@/auth.config";
+import type { Role } from "@/generated/prisma/enums";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
@@ -26,7 +27,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!valid) {
           return null;
         }
-        return { id: user.id, email: user.email };
+        await prisma.event.create({
+          data: {
+            category: "AUDIT",
+            type: "USER_LOGIN",
+            severity: "INFO",
+            message: `${user.email} signed in.`,
+            userId: user.id,
+          },
+        });
+        return { id: user.id, email: user.email, role: user.role };
       },
     }),
   ],
@@ -34,12 +44,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async jwt({ token, user }) {
       if (user) {
         token.id = user.id;
+        token.role = (user as { role?: Role }).role;
       }
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
         session.user.id = token.id as string;
+        session.user.role = (token.role as Role) ?? "VIEWER";
       }
       return session;
     },

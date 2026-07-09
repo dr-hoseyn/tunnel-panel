@@ -12,25 +12,199 @@ datasource db {
   provider = "sqlite"
 }
 
+enum Role {
+  ADMIN
+  OPERATOR
+  VIEWER
+}
+
 // Phase 1: single admin, no registration flow -- seeded via prisma/seed.ts.
+// `role` defaults to ADMIN so that existing seeded users are unaffected;
+// additional users (OPERATOR/VIEWER) are created from the panel's Users page.
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
   passwordHash String
+  role         Role     @default(ADMIN)
   createdAt    DateTime @default(now())
+
+  tunnelsCreated Tunnel[] @relation("TunnelCreatedBy")
+  events         Event[]  @relation("EventUser")
 }
 
-// agentToken is stored in cleartext for phase 1 (single-admin, single-
-// operator MVP scope). Encrypting it at rest is a known gap -- see the
-// panel README's security notes -- before this handles multiple untrusted
-// operators sharing one panel instance.
+// agentTokenEnc/*Enc fields are AES-256-GCM ciphertext (see src/lib/crypto.ts),
+// not cleartext -- closes the gap both READMEs previously flagged for phase 1.
 model Server {
   id             String   @id @default(cuid())
   name           String
   host           String
   agentPort      Int      @default(8443)
-  agentToken     String
+  agentTokenEnc  String
   tlsFingerprint String
+  location       String?
+  agentVersion   String?
+  agentCommit    String?
+  agentOs        String?
+  agentArch      String?
+  lastSeenAt     DateTime?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+
+  tunnelsAsSource Tunnel[] @relation("TunnelSourceServer")
+  tunnelsAsDest   Tunnel[] @relation("TunnelDestServer")
+  events          Event[]  @relation("EventServer")
+}
+
+enum TunnelCore {
+  BACKHAUL
+  RATHOLE
+  GOST
+  HYSTERIA2
+}
+
+enum TunnelStatus {
+  DEPLOYING
+  RUNNING
+  WARNING
+  FAILED
+  STOPPED
+  REMOVING
+  UNKNOWN
+}
+
+// A tunnel the panel itself created and manages end-to-end (agent-native
+// lifecycle -- see agent/internal/tunnels). Distinct from whatever
+// tunnel-manager.sh has configured on a box, which stays visible read-only
+// via the existing /api/v1/tunnels proxy and is never represented here.
+model Tunnel {
+  id             String       @id @default(cuid())
+  name           String
+  core           TunnelCore
+  sourceServerId String
+  destServerId   String
+  config         Json
+  secretEnc      String
+  status         TunnelStatus @default(DEPLOYING)
+  lastCheckedAt  DateTime?
+  lastRestartAt  DateTime?
+  createdById    String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  sourceServer Server           @relation("TunnelSourceServer", fields: [sourceServerId], references: [id])
+  destServer   Server           @relation("TunnelDestServer", fields: [destServerId], references: [id])
+  createdBy    User?            @relation("TunnelCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  deployments  Deployment[]
+  stats        TunnelStat[]
+  events       Event[]          @relation("EventTunnel")
+  backups      TunnelBackup[]
+}
+
+enum DeploymentKind {
+  CREATE
+  START
+  STOP
+  RESTART
+  DELETE
+  REBUILD
+  UPDATE_CORE
+}
+
+enum DeploymentStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+// Durable backing store for the deployment queue (src/lib/deploy-queue.ts):
+// every tunnel lifecycle operation is one row here, so progress survives
+// page reloads/multiple tabs and cancellation has something concrete to flip.
+model Deployment {
+  id          String           @id @default(cuid())
+  tunnelId    String
+  kind        DeploymentKind
+  status      DeploymentStatus @default(QUEUED)
+  steps       Json             @default("[]")
+  attempt     Int              @default(1)
+  maxAttempts Int              @default(3)
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  createdAt   DateTime         @default(now())
+
+  tunnel Tunnel  @relation(fields: [tunnelId], references: [id], onDelete: Cascade)
+  events Event[] @relation("EventDeployment")
+}
+
+// Rolling samples for traffic graphs / health history. Pruned to a bounded
+// window by the instrumentation.ts sampler, not kept forever.
+model TunnelStat {
+  id             String   @id @default(cuid())
+  tunnelId       String
+  timestamp      DateTime @default(now())
+  rxBytes        BigInt   @default(0)
+  txBytes        BigInt   @default(0)
+  latencyMs      Float?
+  packetLossPct  Float?
+  cpuPercent     Float?
+  ramPercent     Float?
+  connections    Int?
+  reconnectCount Int      @default(0)
+
+  tunnel Tunnel @relation(fields: [tunnelId], references: [id], onDelete: Cascade)
+
+  @@index([tunnelId, timestamp])
+}
+
+enum EventCategory {
+  AUDIT
+  DEPLOYMENT
+  RUNTIME
+}
+
+enum Severity {
+  INFO
+  WARNING
+  ERROR
+}
+
+// Central log table backing the Logs page. One flexible table (not three
+// separate ones) filtered by `category` -- Audit/Deployment/Runtime share the
+// same shape and query patterns, so a physical split would just be friction.
+model Event {
+  id           String        @id @default(cuid())
+  category     EventCategory
+  type         String
+  severity     Severity      @default(INFO)
+  message      String
+  serverId     String?
+  tunnelId     String?
+  userId       String?
+  deploymentId String?
+  createdAt    DateTime      @default(now())
+
+  server     Server?     @relation("EventServer", fields: [serverId], references: [id], onDelete: SetNull)
+  tunnel     Tunnel?     @relation("EventTunnel", fields: [tunnelId], references: [id], onDelete: SetNull)
+  user       User?       @relation("EventUser", fields: [userId], references: [id], onDelete: SetNull)
+  deployment Deployment? @relation("EventDeployment", fields: [deploymentId], references: [id], onDelete: SetNull)
+
+  @@index([category, createdAt])
+}
+
+// Snapshot backing the "Backup"/"Rebuild config" tunnel actions -- restorable
+// without manual intervention, so it captures everything needed to
+// regenerate the tunnel: config, the generated unit(s), the secret, and
+// which driver version produced it.
+model TunnelBackup {
+  id                  String   @id @default(cuid())
+  tunnelId            String
+  configSnapshot      Json
+  serviceUnitSnapshot Json
+  secretEnc           String
+  driverVersion       String?
+  note                String?
+  createdAt           DateTime @default(now())
+
+  tunnel Tunnel @relation(fields: [tunnelId], references: [id], onDelete: Cascade)
 }

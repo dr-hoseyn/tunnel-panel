@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { agentFetchFingerprint, agentGet, AgentError } from "@/lib/agent-client";
+import { encryptSecret } from "@/lib/crypto";
 
 /** Thrown with an HTTP status already attached, so route handlers can just
  * catch-and-respond without re-deriving what status code fits the error. */
@@ -54,7 +55,7 @@ export async function registerServer(params: {
   }
 
   return prisma.server.create({
-    data: { name, host, agentPort, agentToken: token, tlsFingerprint: liveFingerprint },
+    data: { name, host, agentPort, agentTokenEnc: encryptSecret(token), tlsFingerprint: liveFingerprint },
     select: { id: true, name: true, host: true, agentPort: true, createdAt: true },
   });
 }

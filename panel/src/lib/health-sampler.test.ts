@@ -26,6 +26,7 @@ function createFakePrisma() {
       if (updatedFilter.lt && !(rowUpdatedAt < updatedFilter.lt)) return false;
     }
     if (where.tunnelId && row.tunnelId !== where.tunnelId) return false;
+    if (where.maintenanceMode !== undefined && Boolean(row.maintenanceMode) !== where.maintenanceMode) return false;
     return true;
   }
 
@@ -96,11 +97,17 @@ const serverStub = (host: string) => ({
   tlsFingerprint: "AA",
 });
 
-function seedTunnel(id: string, status = "RUNNING") {
+function seedTunnel(
+  id: string,
+  status = "RUNNING",
+  overrides: { maintenanceMode?: boolean; autoRestartDisabled?: boolean } = {},
+) {
   fakePrisma.__tunnels.set(id, {
     id,
     name: `Tunnel ${id}`,
     status,
+    maintenanceMode: overrides.maintenanceMode ?? false,
+    autoRestartDisabled: overrides.autoRestartDisabled ?? false,
     sourceServer: serverStub("1.1.1.1"),
     destServer: serverStub("2.2.2.2"),
   });
@@ -214,6 +221,30 @@ describe("health-sampler state machine", () => {
     const failedEvent = fakePrisma.__events.find((e) => e.type === "TUNNEL_HEALTH_FAILED");
     expect(failedEvent).toBeTruthy();
     expect(failedEvent!.message).toContain("disabled");
+  });
+
+  it("never auto-restarts a tunnel with its own autoRestartDisabled flag set, even with the global setting on", async () => {
+    seedTunnel("t-per-tunnel-no-restart", "RUNNING", { autoRestartDisabled: true });
+    agentGetMock.mockResolvedValue(unhealthyResponse());
+
+    await runSampleCycle(); // 1 -> WARNING
+    await runSampleCycle(); // 2 -> would restart, but this tunnel opted out
+
+    expect(restartTunnelMock).not.toHaveBeenCalled();
+    expect(fakePrisma.__tunnels.get("t-per-tunnel-no-restart")!.status).toBe("FAILED");
+    const failedEvent = fakePrisma.__events.find((e) => e.type === "TUNNEL_HEALTH_FAILED");
+    expect(failedEvent!.message).toContain("disabled for this tunnel");
+  });
+
+  it("skips a maintenanceMode tunnel entirely -- no agent calls, no stat, no status change", async () => {
+    seedTunnel("t-maintenance", "WARNING", { maintenanceMode: true });
+    agentGetMock.mockResolvedValue(unhealthyResponse());
+
+    await runSampleCycle();
+
+    expect(agentGetMock).not.toHaveBeenCalled();
+    expect(fakePrisma.__tunnels.get("t-maintenance")!.status).toBe("WARNING"); // unchanged
+    expect(fakePrisma.__stats).toHaveLength(0);
   });
 
   it("logs the FAILED event exactly once per failure streak, not every cycle it stays FAILED", async () => {

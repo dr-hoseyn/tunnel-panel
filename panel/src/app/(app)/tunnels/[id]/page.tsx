@@ -57,6 +57,8 @@ export default async function TunnelDetailPage({ params }: { params: Promise<{ i
           sourceServer: tunnel.sourceServer,
           destServer: tunnel.destServer,
           lastError,
+          maintenanceMode: tunnel.maintenanceMode,
+          autoRestartDisabled: tunnel.autoRestartDisabled,
         }}
         stats={stats.map((s) => ({
           timestamp: s.timestamp.toISOString(),

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Play, Square, RotateCw, ScrollText, Archive, RefreshCw, AlertTriangle, Loader2 } from "lucide-react";
+import { Play, Square, RotateCw, ScrollText, Archive, RefreshCw, AlertTriangle, Loader2, Copy, Wrench, BellOff } from "lucide-react";
 import { TunnelStatusBadge } from "@/components/TunnelStatusBadge";
 import { ConfirmButton } from "@/components/ConfirmButton";
 import { TrafficChart } from "@/components/TrafficChart";
@@ -24,6 +24,8 @@ interface TunnelData {
   sourceServer: ServerRef;
   destServer: ServerRef;
   lastError: string | null;
+  maintenanceMode: boolean;
+  autoRestartDisabled: boolean;
 }
 
 interface StatPoint {
@@ -74,6 +76,10 @@ export function TunnelDetailView({
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [backupMessage, setBackupMessage] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
+  const [maintenanceMode, setMaintenanceMode] = useState(tunnel.maintenanceMode);
+  const [autoRestartDisabled, setAutoRestartDisabled] = useState(tunnel.autoRestartDisabled);
+  const [togglePending, setTogglePending] = useState<"maintenance" | "auto-restart" | null>(null);
 
   useEffect(() => {
     const source = new EventSource(`/api/v1/tunnels/${tunnel.id}/stream`);
@@ -150,6 +156,70 @@ export function TunnelDetailView({
     }
   }
 
+  async function duplicateTunnelAction() {
+    setDuplicating(true);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/v1/tunnels/${tunnel.id}/duplicate`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setActionError(data.error ?? "Failed to duplicate tunnel");
+        return;
+      }
+      router.push(`/tunnels/${data.tunnel.id}`);
+    } catch {
+      setActionError("Network error while contacting the panel API");
+    } finally {
+      setDuplicating(false);
+    }
+  }
+
+  async function toggleMaintenanceMode() {
+    const next = !maintenanceMode;
+    setTogglePending("maintenance");
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/v1/tunnels/${tunnel.id}/maintenance`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setActionError(data.error ?? "Failed to update maintenance mode");
+        return;
+      }
+      setMaintenanceMode(next);
+    } catch {
+      setActionError("Network error while contacting the panel API");
+    } finally {
+      setTogglePending(null);
+    }
+  }
+
+  async function toggleAutoRestartDisabled() {
+    const next = !autoRestartDisabled;
+    setTogglePending("auto-restart");
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/v1/tunnels/${tunnel.id}/auto-restart`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ disabled: next }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setActionError(data.error ?? "Failed to update auto-restart setting");
+        return;
+      }
+      setAutoRestartDisabled(next);
+    } catch {
+      setActionError("Network error while contacting the panel API");
+    } finally {
+      setTogglePending(null);
+    }
+  }
+
   return (
     <div>
       <div className="mb-1 flex items-center gap-3">
@@ -161,6 +231,16 @@ export function TunnelDetailView({
             className={`rounded-full border px-2 py-0.5 text-xs font-medium ${HEALTH_LABEL_COLOR[healthScore.label] ?? HEALTH_LABEL_COLOR.Unknown}`}
           >
             Health {healthScore.score} · {healthScore.label}
+          </span>
+        )}
+        {maintenanceMode && (
+          <span className="rounded-full border border-amber-900 bg-amber-950/40 px-2 py-0.5 text-xs font-medium text-amber-400">
+            Maintenance mode
+          </span>
+        )}
+        {autoRestartDisabled && (
+          <span className="rounded-full border border-neutral-700 bg-neutral-900/40 px-2 py-0.5 text-xs font-medium text-neutral-400">
+            Auto-restart off
           </span>
         )}
       </div>
@@ -209,6 +289,35 @@ export function TunnelDetailView({
           className="flex items-center gap-1.5 rounded border border-neutral-700 px-3 py-1.5 text-xs font-medium text-neutral-300 hover:bg-neutral-800"
         >
           <Archive className="h-3.5 w-3.5" /> Backup
+        </button>
+        <button
+          onClick={duplicateTunnelAction}
+          disabled={duplicating}
+          className="flex items-center gap-1.5 rounded border border-neutral-700 px-3 py-1.5 text-xs font-medium text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+        >
+          <Copy className="h-3.5 w-3.5" /> {duplicating ? "Duplicating..." : "Duplicate"}
+        </button>
+        <button
+          onClick={toggleMaintenanceMode}
+          disabled={togglePending === "maintenance"}
+          className={`flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs font-medium disabled:opacity-50 ${
+            maintenanceMode
+              ? "border-amber-800 bg-amber-950/40 text-amber-300 hover:bg-amber-900/40"
+              : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+          }`}
+        >
+          <Wrench className="h-3.5 w-3.5" /> {maintenanceMode ? "Exit maintenance" : "Maintenance mode"}
+        </button>
+        <button
+          onClick={toggleAutoRestartDisabled}
+          disabled={togglePending === "auto-restart"}
+          className={`flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs font-medium disabled:opacity-50 ${
+            autoRestartDisabled
+              ? "border-neutral-600 bg-neutral-800 text-neutral-200 hover:bg-neutral-700"
+              : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+          }`}
+        >
+          <BellOff className="h-3.5 w-3.5" /> {autoRestartDisabled ? "Enable auto-restart" : "Disable auto-restart"}
         </button>
         <ConfirmButton
           onConfirm={deleteTunnel}

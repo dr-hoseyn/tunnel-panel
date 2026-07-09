@@ -95,8 +95,12 @@ export async function runSampleCycle(): Promise<void> {
   // cycle, for every registered server.
   await pingAllServers();
 
+  // maintenanceMode tunnels are skipped entirely -- no agent calls, no
+  // status transitions, no TunnelStat sample -- so planned work on either
+  // side doesn't fight the platform's own health checks/auto-restart while
+  // it's in progress.
   const tunnels = await prisma.tunnel.findMany({
-    where: { status: { notIn: [TunnelStatus.DEPLOYING, TunnelStatus.REMOVING] } },
+    where: { status: { notIn: [TunnelStatus.DEPLOYING, TunnelStatus.REMOVING] }, maintenanceMode: false },
     include: { sourceServer: true, destServer: true },
   });
 
@@ -292,7 +296,8 @@ async function sampleTunnel(tunnel: TunnelWithServers, settings: AppSettingsValu
     return;
   }
 
-  if (settings.autoRestartEnabled && s.failures === 2 && !s.restarted) {
+  const autoRestartAllowed = settings.autoRestartEnabled && !tunnel.autoRestartDisabled;
+  if (autoRestartAllowed && s.failures === 2 && !s.restarted) {
     s.restarted = true;
     await logEvent(
       tunnel.id,
@@ -324,7 +329,9 @@ async function sampleTunnel(tunnel: TunnelWithServers, settings: AppSettingsValu
       "TUNNEL_HEALTH_FAILED",
       s.restarted
         ? `Tunnel "${tunnel.name}" is still failing health checks after an automatic restart -- flagged FAILED and will not be auto-restarted again.`
-        : `Tunnel "${tunnel.name}" is failing health checks -- flagged FAILED. Auto-restart is disabled in Settings.`,
+        : tunnel.autoRestartDisabled
+          ? `Tunnel "${tunnel.name}" is failing health checks -- flagged FAILED. Auto-restart is disabled for this tunnel.`
+          : `Tunnel "${tunnel.name}" is failing health checks -- flagged FAILED. Auto-restart is disabled in Settings.`,
     );
   }
 }

@@ -96,6 +96,15 @@ model Tunnel {
   createdById    String?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
+  // When true, health-sampler.ts skips this tunnel entirely (no health
+  // fetch, no status transitions, no TunnelStat sample, no auto-restart) --
+  // for planned work on either server without the platform fighting it.
+  maintenanceMode Boolean @default(false)
+  // Finer-grained than maintenanceMode: health checks/status/stats keep
+  // running as normal, but the one-automatic-restart-on-failure behavior is
+  // skipped for this tunnel specifically (global default lives in
+  // AppSettings.autoRestartEnabled -- this is a per-tunnel override of it).
+  autoRestartDisabled Boolean @default(false)
 
   sourceServer Server         @relation("TunnelSourceServer", fields: [sourceServerId], references: [id])
   destServer   Server         @relation("TunnelDestServer", fields: [destServerId], references: [id])

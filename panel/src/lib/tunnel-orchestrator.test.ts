@@ -117,7 +117,15 @@ vi.mock("@/lib/settings", () => ({
   }),
 }));
 
-const { createTunnel, deleteTunnel, startTunnel, retryTunnelDeploy } = await import("./tunnel-orchestrator");
+const {
+  createTunnel,
+  deleteTunnel,
+  startTunnel,
+  retryTunnelDeploy,
+  duplicateTunnel,
+  setTunnelMaintenanceMode,
+  setTunnelAutoRestartDisabled,
+} = await import("./tunnel-orchestrator");
 const { encryptSecret } = await import("./crypto");
 
 function seedServer(id: string, name: string, host: string) {
@@ -280,6 +288,80 @@ describe("retryTunnelDeploy", () => {
       secretEnc: encryptSecret("s"),
     });
     await expect(retryTunnelDeploy("tunnel-running")).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+describe("duplicateTunnel", () => {
+  it("creates a new tunnel with the same core/config/ports and a ' (copy)' name, deploying it fresh", async () => {
+    agentPostMock.mockResolvedValue("{}");
+    const { tunnel: original, deploymentId: originalDeploymentId } = await createTunnel({
+      name: "Original",
+      core: "BACKHAUL" as never,
+      sourceServerId: "iran-1",
+      destServerId: "germany-1",
+      port: 3080,
+    });
+    await waitForDeployment(originalDeploymentId);
+    agentPostMock.mockClear();
+    agentPostMock.mockResolvedValue("{}");
+
+    const { tunnel: copy, deploymentId } = await duplicateTunnel(original.id);
+    await waitForDeployment(deploymentId);
+
+    expect(copy.id).not.toBe(original.id);
+    expect(copy.name).toBe("Original (copy)");
+    expect((copy as { sourceServerId: string }).sourceServerId).toBe("iran-1");
+    expect((copy as { destServerId: string }).destServerId).toBe("germany-1");
+    expect(agentPostMock).toHaveBeenCalledTimes(2); // deployed independently, not sharing agent state
+  });
+
+  it("supports overriding the destination server (clone to another server)", async () => {
+    agentPostMock.mockResolvedValue("{}");
+    const { tunnel: original } = await createTunnel({
+      name: "Original",
+      core: "BACKHAUL" as never,
+      sourceServerId: "iran-1",
+      destServerId: "germany-1",
+      port: 3080,
+    });
+    seedServer("france-1", "France", "3.3.3.3");
+
+    const { tunnel: clone, deploymentId } = await duplicateTunnel(original.id, { destServerId: "france-1" });
+    await waitForDeployment(deploymentId);
+
+    expect((clone as { destServerId: string }).destServerId).toBe("france-1");
+  });
+
+  it("rejects a clone whose overridden source/destination would be the same server", async () => {
+    agentPostMock.mockResolvedValue("{}");
+    const { tunnel: original } = await createTunnel({
+      name: "Original",
+      core: "BACKHAUL" as never,
+      sourceServerId: "iran-1",
+      destServerId: "germany-1",
+      port: 3080,
+    });
+    await expect(duplicateTunnel(original.id, { destServerId: "iran-1" })).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describe("setTunnelMaintenanceMode / setTunnelAutoRestartDisabled", () => {
+  it("toggles maintenanceMode and records an AUDIT event", async () => {
+    fakePrisma.__tunnels.set("tunnel-m", { id: "tunnel-m", name: "M", maintenanceMode: false });
+    await setTunnelMaintenanceMode("tunnel-m", true);
+    expect(fakePrisma.__tunnels.get("tunnel-m")!.maintenanceMode).toBe(true);
+    expect(fakePrisma.__events.some((e) => e.type === "TUNNEL_MAINTENANCE_ENABLED")).toBe(true);
+  });
+
+  it("toggles autoRestartDisabled and records an AUDIT event", async () => {
+    fakePrisma.__tunnels.set("tunnel-a", { id: "tunnel-a", name: "A", autoRestartDisabled: false });
+    await setTunnelAutoRestartDisabled("tunnel-a", true);
+    expect(fakePrisma.__tunnels.get("tunnel-a")!.autoRestartDisabled).toBe(true);
+    expect(fakePrisma.__events.some((e) => e.type === "TUNNEL_AUTO_RESTART_DISABLED")).toBe(true);
+  });
+
+  it("throws a 404-shaped error for an unknown tunnel id", async () => {
+    await expect(setTunnelMaintenanceMode("does-not-exist", true)).rejects.toMatchObject({ status: 404 });
   });
 });
 

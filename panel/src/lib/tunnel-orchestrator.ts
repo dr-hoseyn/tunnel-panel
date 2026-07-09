@@ -163,6 +163,42 @@ export async function retryTunnelDeploy(tunnelId: string): Promise<{ deploymentI
   return { deploymentId };
 }
 
+export interface DuplicateTunnelOptions {
+  name?: string;
+  sourceServerId?: string;
+  destServerId?: string;
+}
+
+/** Creates a brand-new tunnel from an existing one's core/config/ports --
+ * "Duplicate" when called with no options (same source/destination, a new
+ * generated secret, name suffixed " (copy)"), or a lightweight "Clone to
+ * another server" when sourceServerId/destServerId are overridden. Always
+ * goes through the normal createTunnel path (fresh secret, full deploy,
+ * same rollback guarantees) rather than copying agent-side state directly --
+ * a duplicate is a new tunnel, not a shared one. */
+export async function duplicateTunnel(tunnelId: string, options: DuplicateTunnelOptions = {}) {
+  const original = await loadTunnelOrThrow(tunnelId);
+  const config = original.config as unknown as { port: number; ports?: PortMappingInput[]; extra?: Record<string, string> };
+
+  const sourceServerId = options.sourceServerId ?? original.sourceServerId;
+  const destServerId = options.destServerId ?? original.destServerId;
+  if (sourceServerId === destServerId) {
+    throw new OrchestratorError("source and destination must be different servers");
+  }
+
+  const input: CreateTunnelInput = {
+    name: options.name ?? `${original.name} (copy)`,
+    core: original.core,
+    sourceServerId,
+    destServerId,
+    port: config.port,
+    ports: config.ports,
+    extra: config.extra,
+    createdById: original.createdById ?? undefined,
+  };
+  return createTunnel(input);
+}
+
 /** Marks a tunnel FAILED (never leaves it hanging at DEPLOYING) and records
  * exactly why -- both as a queryable Event and as the error the caller
  * re-throws, which the deployment queue's own catch already records into
@@ -478,4 +514,35 @@ export async function deleteTunnel(tunnelId: string): Promise<{ deploymentId: st
     },
   });
   return { deploymentId };
+}
+
+/** Pure DB toggles -- no agent interaction, so no deployment queue job.
+ * health-sampler.ts reads maintenanceMode/autoRestartDisabled directly on
+ * its next cycle; there's nothing to "deploy". */
+export async function setTunnelMaintenanceMode(tunnelId: string, enabled: boolean): Promise<void> {
+  const tunnel = await loadTunnelOrThrow(tunnelId);
+  await prisma.tunnel.update({ where: { id: tunnelId }, data: { maintenanceMode: enabled } });
+  await prisma.event.create({
+    data: {
+      category: EventCategory.AUDIT,
+      type: enabled ? "TUNNEL_MAINTENANCE_ENABLED" : "TUNNEL_MAINTENANCE_DISABLED",
+      severity: Severity.INFO,
+      message: `Maintenance mode ${enabled ? "enabled" : "disabled"} for tunnel "${tunnel.name}".`,
+      tunnelId,
+    },
+  });
+}
+
+export async function setTunnelAutoRestartDisabled(tunnelId: string, disabled: boolean): Promise<void> {
+  const tunnel = await loadTunnelOrThrow(tunnelId);
+  await prisma.tunnel.update({ where: { id: tunnelId }, data: { autoRestartDisabled: disabled } });
+  await prisma.event.create({
+    data: {
+      category: EventCategory.AUDIT,
+      type: disabled ? "TUNNEL_AUTO_RESTART_DISABLED" : "TUNNEL_AUTO_RESTART_ENABLED",
+      severity: Severity.INFO,
+      message: `Auto-restart ${disabled ? "disabled" : "enabled"} for tunnel "${tunnel.name}".`,
+      tunnelId,
+    },
+  });
 }
